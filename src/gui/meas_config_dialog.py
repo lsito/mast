@@ -17,10 +17,12 @@ from PySide6.QtCore import Qt
 
 from src.data_models.meas_config import MeasurementConfig
 
+# Definition of the window
 class MeasurementConfigDialog(QDialog):
     def __init__(self, config: MeasurementConfig | None = None, parent=None):
+
         super().__init__(parent)
-        self.setWindowTitle("Measurement condition table")
+        self.setWindowTitle("Measurement Conditions")
         self.setModal(True)
         self.resize(560, 420)
 
@@ -34,27 +36,29 @@ class MeasurementConfigDialog(QDialog):
         grid.setVerticalSpacing(14)
 
         # Row 0
-        grid.addWidget(QLabel("Designed Operating frequency (MHz)"), 0, 0)
+        grid.addWidget(QLabel("Design Op. Frequency [MHz]"), 0, 0)
         self.designed_frequency_edit = QLineEdit(str(self._config.designed_frequency_mhz))
         grid.addWidget(self.designed_frequency_edit, 0, 1)
 
         # Row 1
-        grid.addWidget(QLabel("Designed Operating temperature (Deg C)"), 1, 0)
+        degree_celsius = "\u00B0C"
+
+        grid.addWidget(QLabel(f"Design Op. Temperature [{degree_celsius}]"), 1, 0)
         self.designed_temp_edit = QLineEdit(str(self._config.designed_temperature_c))
         grid.addWidget(self.designed_temp_edit, 1, 1)
 
         # Row 2
-        grid.addWidget(QLabel("RF measurement temperature (Deg C)"), 2, 0)
+        grid.addWidget(QLabel(f"RF Meas. Temperature [{degree_celsius}]"), 2, 0)
         self.rf_temp_edit = QLineEdit(str(self._config.rf_measurement_temperature_c))
         grid.addWidget(self.rf_temp_edit, 2, 1)
 
         # Row 3
-        grid.addWidget(QLabel("Frequency shift w/o --> w/ wire (MHz)"), 3, 0)
+        grid.addWidget(QLabel("Frequency Shift w/o VS w/ wire [MHz]"), 3, 0)
         self.freq_shift_edit = QLineEdit(str(self._config.frequency_shift_mhz))
         grid.addWidget(self.freq_shift_edit, 3, 1)
 
         # Row 4 atmosphere
-        grid.addWidget(QLabel("Atmosphere inside structure"), 4, 0)
+        grid.addWidget(QLabel("Atmosphere in Structure"), 4, 0)
         atmosphere_layout = QHBoxLayout()
         self.nitrogen_radio = QRadioButton("Nitrogen")
         self.air_radio = QRadioButton("Air")
@@ -73,12 +77,12 @@ class MeasurementConfigDialog(QDialog):
         grid.addLayout(atmosphere_layout, 4, 1)
 
         # Row 5
-        grid.addWidget(QLabel("Relative Humidity (%)"), 5, 0)
+        grid.addWidget(QLabel("Relative Humidity [%]"), 5, 0)
         self.humidity_edit = QLineEdit(str(self._config.relative_humidity_percent))
         grid.addWidget(self.humidity_edit, 5, 1)
 
         # Row 6
-        grid.addWidget(QLabel("Target frequency to tune (MHz)"), 6, 0)
+        grid.addWidget(QLabel("Target Frequency to Tune [MHz]"), 6, 0)
         self.target_frequency_edit = QLineEdit(str(self._config.target_frequency_mhz))
         grid.addWidget(self.target_frequency_edit, 6, 1)
 
@@ -88,7 +92,7 @@ class MeasurementConfigDialog(QDialog):
         # Load file button row
         load_layout = QHBoxLayout()
         load_layout.addStretch()
-        self.load_file_button = QPushButton("load file...")
+        self.load_file_button = QPushButton("Load File...")
         self.load_file_button.clicked.connect(self.load_from_file)
         load_layout.addWidget(self.load_file_button)
         load_layout.addStretch()
