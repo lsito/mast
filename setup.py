@@ -5,7 +5,7 @@ setup(
     version="0.1.0",  # Initial release version
     author="Leonardo Sito",  # Your name
     author_email="leonardo.sito@cern.com",  # Your email
-    description="A package multicell accelerating structures (mast) tuning",  # Short description
+    description="A package for Multicell Accelerating Structures Tuning (mast)",  # Short description
     long_description=open("README.md").read(),  # Optional, long description from README
     long_description_content_type="text/markdown",  # If README is in Markdown format
     url="https://github.com/lsito/mast.git",  # URL to the package repo (GitHub)
