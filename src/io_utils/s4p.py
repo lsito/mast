@@ -16,10 +16,10 @@ def read_s4p(filename: str | Path, renumber_ports_list: list[int] = [0, 2, 1, 3]
         raise ValueError(f"Expected a 4-port network, got {ntwk.nports}-port")
 
     f = ntwk.f # Should be already in [Hz], but check just in case
-               # Also note that in zero-span measurements, this is time [s]
+               # Also note that in zero-span measurements, this is time [s] or samples
 
     # Check the renumbering; might be a good idea to pass is 
-    ntwk.renumber(renumber_ports_list) # Reorder ports to match mixed-mode convention
+    ntwk.renumber([0, 1, 2, 3], renumber_ports_list) # Reorder ports to match mixed-mode convention
     ntwk.se2gmm(p=2)
 
     scc11 = ntwk.s[:, 2, 2]
