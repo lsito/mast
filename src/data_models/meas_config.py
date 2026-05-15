@@ -1,14 +1,15 @@
 from dataclasses import dataclass
+from src.core.config_parser import DataMixin
 
-@dataclass
-class MeasurementConfig:
+@dataclass(slots=True)
+class MeasurementConfig(DataMixin):
     designed_frequency_mhz: float = 11994.0
     designed_temperature_c: float = 30.0
     rf_measurement_temperature_c: float = 20.0
     frequency_shift_mhz: float = 0.5
     atmosphere: str = "Nitrogen"
     relative_humidity_percent: float = 0.0
-    target_frequency_mhz: float = 11994.0
+    # target_frequency_mhz: float = 11994.0
 
     @property
     def temperature_correction_mhz(self):

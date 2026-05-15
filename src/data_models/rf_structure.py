@@ -2,15 +2,16 @@ from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
 
+from src.core.config_parser import DataMixin
 
-@dataclass
-class RFStructureParams:
+@dataclass(slots=True)
+class RFStructureParams(DataMixin): # We use inheritance here
     """
     Parameters loaded from the .astr file describing the RF structure.
     Corresponds to MATLAB's bdata.astr nested struct.
     """
-    NIn: Optional[int] = None           # Number of input cells
-    NOut: Optional[int] = None          # Number of output cells
+    NIn: int = None           # Number of input cells
+    NOut: int = None          # Number of output cells
     Q0: Optional[float] = None          # Unloaded Q factor
     ans: Optional[object] = None        # Generic answer/result field
     c0: Optional[float] = None          # Speed of light (or scaling)
@@ -24,5 +25,3 @@ class RFStructureParams:
     phi0: Optional[float] = None        # Reference phase
     rovq: Optional[float] = None        # R/Q (shunt impedance / Q)
     vg: Optional[float] = None          # Group velocity
-
-

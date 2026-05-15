@@ -1,6 +1,8 @@
+from dataclasses import dataclass, field
+from typing import Optional
+import numpy as np
 
-from dataclasses import dataclass
-
+from src.core.config_parser import DataMixin
 
 @dataclass
 class BeadpullOptions:

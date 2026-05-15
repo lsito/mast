@@ -13,6 +13,7 @@ setup(
     install_requires=[  # List any package dependencies
         "numpy", 
         "pandas",
+        "skrf"
         # Add other dependencies here if needed
     ],
     classifiers=[  # Optional: Classifiers to describe the project
