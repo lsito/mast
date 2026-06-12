@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+import copy
 import numpy as np
 
-from scipy.constants import c
+from scipy.constants import c as c0
+from scipy.interpolate import CubicSpline
 from src.core.config_parser import DataMixin
 
 @dataclass(slots=True)
@@ -74,25 +76,95 @@ class RFStructureParams(DataMixin): # We use inheritance here
         Generic container for derived quantities, intermediate results,
         or analysis outputs.
     """
-    filename: Optional[str] = None      # JSON filename/filepath
+
+    filename: Optional[str] = None
 
     # Overall cells
-    noc: int = None           # Number of cells
-    NIn: int = 1           # Number of input cells
-    NOut: int = noc          # Number of output cells
+    noc: Optional[int] = None
+    NIn: int = 1
+    NOut: Optional[int] = None
+
+    # Global RF parameters
+    fref: Optional[float] = None
+    phi0: Optional[float] = None
+    coupling: float = 1.0
+
+    # Boundary phase/cell scaling
+    phi_in: Optional[float] = None
+    phi_out: Optional[float] = None
+    rfac_in: float = 1.0
+    rfac_out: float = 1.0
+
+    # Analysis options
+    option_inverse: bool = False
+
+    # Per-cell RF parameters
+    Q0: Optional[np.ndarray] = None
+    rovq: Optional[np.ndarray] = None
+    vg: Optional[np.ndarray] = None
+
+    # Particle constants
+    v_particles: Optional[float] = None
+
+    # Metadata / results
+    desc: Optional[str] = None
+    ans: Optional[Any] = None
+
+
+    @property
+    def phi(self) -> np.ndarray:
+
+        phi_in = self.phi_out if self.option_inverse else self.phi_in
+        phi_out = self.phi_in if self.option_inverse else self.phi_out
+
+        phi = self.phi0 * np.ones(self.noc - 1)
+
+        phi[0] = phi_in
+        phi[-1] = phi_out
+
+        return phi
+        
+    @property
+    def vg_(self) -> np.ndarray:
+        # spline interpolation
+        x_old = np.arange(1, self.noc - 1)
+        x_new = np.arange(0, self.noc)
+
+        y = self._maybe_invert_array(self.vg)
+        y = CubicSpline(x_old, y)(x_new)
+
+        return y
     
-    fref: Optional[float] = None        # Reference frequency in Hz
-    phi0: Optional[float] = None        # Reference phase in degrees
-    coupling: Optional[float] = 1   # Input/output coupling factor
+    @property
+    def Q0_(self) -> np.ndarray:
+        # spline interpolation
+        x_old = np.arange(1, self.noc - 1)
+        x_new = np.arange(0, self.noc)
 
-    # RF Params per cell (np.ndarrays are Q0, rovq, and vg; length noc-2)
-    Q0: Optional[np.ndarray] = None          # Unloaded Q factor
-    phi: Optional[float] = None    # Phase per cell
-    rovq: Optional[np.ndarray] = None        # R/Q in Ohms
+        y = self._maybe_invert_array(self.Q0)
+        y = CubicSpline(x_old, y)(x_new)
 
-    c0: Optional[float] = c          # Speed of light (or scaling)
-    v_particles: Optional[float] = 1 * c0 # Particle velocity
-    vg: Optional[np.ndarray] = None          # Group velocity
+        return y
 
-    desc: Optional[str] = None          # Structure description
-    ans: Optional[object] = None        # Generic answer/result field
+    @property
+    def rovq_(self) -> np.ndarray:
+    # boundary cells
+
+        y = self._maybe_invert_array(self.rovq)
+
+        rfac_in = self.rfac_out if self.option_inverse else self.rfac_in
+        rfac_out = self.rfac_in if self.option_inverse else self.rfac_out
+
+        return np.concatenate([
+            [y[0] * rfac_in],
+            y,
+            [y[-1] * rfac_out],
+        ])
+
+    def _maybe_invert_array(self, arr: np.ndarray) -> np.ndarray:
+        arr = np.asarray(arr, dtype=float)
+
+        if self.option_inverse:
+            return arr[::-1]
+
+        return arr
