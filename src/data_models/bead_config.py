@@ -4,82 +4,88 @@ import numpy as np
 
 from src.core.config_parser import DataMixin
 
-@dataclass
-class BeadpullOptions:
+from dataclasses import dataclass
+from typing import Optional
+
+from src.core.config_parser import DataMixin
+
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from src.core.config_parser import DataMixin
+
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from src.core.config_parser import DataMixin
+
+
+@dataclass(slots=True)
+class BeadpullConfig(DataMixin):
     """
-    Flags controlling how the beadpull measurement is interpreted.
-    Corresponds to MATLAB's bdata.options nested struct.
+    Options used by the bead-pull analysis.
+
+    This class follows the variable names and numerical constants used in
+    `Calculations_test.ipynb`.
+
+    Attributes
+    ----------
+    use_S_output_for_BP:
+        Notebook variable `use_S_output_for_BP`.
+
+        If False, the analyzer uses the input-side corrected signal, usually
+        `scc11`.
+
+        If True, the analyzer uses the output-side corrected signal, usually
+        `scc22`.
+
+    n_zero:
+        Notebook variable `n_zero`.
+
+        Number of samples used at the beginning and end of the bead-pull trace
+        for zero-line/background estimation and checking.
+
+    max_zero_line_deviation:
+        Notebook variable `max_zero_line_deviation`.
+
+        Maximum accepted deviation in the zero-line quality check.
+
+    threshold_fraction:
+        Fraction used to define the bead-pull peak extraction threshold.
+
+        The notebook logic is equivalent to:
+
+        `threshold = threshold_fraction * max(abs(atp))`
+
+    smooth_size:
+        Smoothing window used before peak extraction.
+
+        The notebook uses `uniform_filter1d(..., size=5)`.
+
+    phase_tolerance:
+        Phase tolerance used when checking double peaks.
+
+        The notebook uses `5 * np.pi / 180`.
+
+    remove_peaks:
+        Manual list of peaks to remove.
+
+        The notebook initializes this as an empty list.
+
+    verbose:
+        Diagnostic verbosity level used by helper functions such as
+        `zero_line_check`.
     """
-    use_S_output_for_BP: Optional[bool] = None
-    invert_RF_structure_parameters: Optional[bool] = None
-    invert_measurement_direction: Optional[bool] = None
 
-
-@dataclass
-class BeadpullRecord:
-    """
-    Complete data record for a single beadpull measurement.
-    Corresponds to one element of MATLAB's bdata struct array.
-    """
-    # --- File references ---
-    filename: Optional[str] = None          # Raw data file
-    file_astr: Optional[str] = None         # .astr structure file
-
-    # --- RF structure parameters (from .astr file) ---
-    astr: RFStructureParams = field(default_factory=RFStructureParams)
-
-    # --- Frequency references ---
-    freq: Optional[float] = None            # Beadpull measurement frequency
-    ftarget: Optional[float] = None         # Target frequency at measurement condition
-
-    # --- Metadata ---
-    info: Optional[object] = None
-
-    # --- Raw outputs ---
-    poweroutput: Optional[np.ndarray] = None
-    bpoutput: Optional[np.ndarray] = None
-
-    # --- Raw S-parameter measurement ---
-    sorg: Optional[np.ndarray] = None       # S11, full measurement
-    a_zero: Optional[np.ndarray] = None     # Zero-line values (bead retracted)
-    gamma0: Optional[np.ndarray] = None     # Zero-line at reference bead position
-
-    # --- Perturbation signal ---
-    ssub: Optional[np.ndarray] = None       # S11 perturbation due to bead
-
-    # --- Beadpull results ---
-    locpk: Optional[np.ndarray] = None      # Peak positions (cell locations)
-    ebp: Optional[np.ndarray] = None        # E-field max amplitude per cell
-    phiadv: Optional[np.ndarray] = None     # Phase advance between cells
-    phimean: Optional[float] = None         # Mean phase advance (excl. matching cell)
-    phisig: Optional[float] = None          # Std dev of phase advance
-
-    # --- Wave decomposition ---
-    wfn: Optional[np.ndarray] = None        # Forward wave (normalized)
-    wbn: Optional[np.ndarray] = None        # Backward wave (normalized)
-    dsn: Optional[np.ndarray] = None
-    dkn: Optional[np.ndarray] = None
-    dun: Optional[np.ndarray] = None
-
-    # --- Local S11 and temperature sensitivity ---
-    s11local: Optional[np.ndarray] = None           # Local S11 per cell
-    ds11local_dtemp: Optional[np.ndarray] = None    # dS11_local / dT
-
-    # --- Global tuning quantities ---
-    ds11: Optional[np.ndarray] = None       # Delta S11 for tuning (>0 push, <0 pull)
-    alpha: Optional[np.ndarray] = None      # Damping: local -> global S11
-    df2tune: Optional[np.ndarray] = None    # Delta freq for tuning (>0 push, <0 pull)
-
-    # --- Frequency targets ---
-    f0: Optional[float] = None              # Beadpull frequency
-    f1: Optional[float] = None              # Target lab frequency
-
-    # --- Tuning state ---
-    est: Optional[object] = None
-    s11local_org: Optional[np.ndarray] = None
-    ref_end_comp: Optional[object] = None
-    ds11_0: Optional[np.ndarray] = None
-    ds11_1: Optional[np.ndarray] = None
-
-    # --- Measurement options ---
-    options: BeadpullOptions = field(default_factory=BeadpullOptions)
+    use_S_output_for_BP: bool = False
+    n_zero: int = 30
+    max_zero_line_deviation: float = 1e-3
+    threshold_fraction: float = 0.15
+    smooth_size: int = 5
+    phase_tolerance: float = 5 * np.pi / 180
+    remove_peaks: list[int] = field(default_factory=list)
+    verbose: int = 0
