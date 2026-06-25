@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Optional
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -386,13 +387,8 @@ class BeadPullAnalyzer:
         phase = np.unwrap(np.angle(a))
         phase_peaks = phase[locpk].copy()
 
+        # Correct phase branch issues
         dphase_peaks = -np.diff(phase_peaks)
-
-        if len(dphase_peaks) != len(phi):
-            raise ValueError(
-                f"`dphase_peaks` has length {len(dphase_peaks)}, but "
-                f"`phi` has length {len(phi)}."
-            )
 
         Dpp = (dphase_peaks - 2 * phi) / (2 * np.pi)
 
@@ -401,7 +397,9 @@ class BeadPullAnalyzer:
         if len(ffx) > 0:
             for idx in ffx:
                 phase_shift = np.round(Dpp[idx]) * 2 * np.pi
+                # Correct this phase jump
                 dphase_peaks[idx] = dphase_peaks[idx] - phase_shift
+                # Shfit all following peak phases
                 phase_peaks[idx + 1:] += phase_shift
 
         dphi_c = -np.diff(phase_peaks)
@@ -464,33 +462,46 @@ class BeadPullAnalyzer:
 
         d = phi0 * v_particles / fref / (2 * np.pi)
 
-        rovq = bdata.rovq_base * d
+        rovq = bdata.rovq_ * d
 
         squ = Ebp / np.sqrt(rovq)
 
+        # Determining forward and backward wave (from [1], Eq. 8 to 15)
+
+        # # Field in the structure superposition of forward and backward waves
         I = squ
 
-        A = np.zeros(noc + 1, dtype=np.complex128)
-        B = np.zeros(noc + 1, dtype=np.complex128)
+        A = np.zeros(noc + 1, dtype=np.complex128) # Forward wave
+        B = np.zeros(noc + 1, dtype=np.complex128) # Backward wave
 
-        A[1:-1] = (
-            I[:-1] - I[1:] * np.exp(-1j * phi)
-        ) / (2j * np.sin(phi))
+        # input                                           output
+        #   |                                               |
+        #   v                                               v
 
-        B[1:-1] = (
-            I[:-1] - I[1:] * np.exp(1j * phi)
-        ) / (-2j * np.sin(phi))
+        #   A[0] -> cell 1 -> A[1] -> cell 2 -> ... -> A[noc]
+        #   B[0] <- cell 1 <- B[1] <- cell 2 <- ... <- B[noc]
 
-        A[-1] = (
-            A[-2]
-            * (1 - abs(B[-2] / A[-2]))
-            * np.exp(1j * phi[-1])
-        )
+        # Implementing Eq. 10
+        # A[1:-1]=             x        x             x
+        # A      =    A[0]    A[1]    A[2] ... ... A[N-2]    A[N-1]
+        # B      =    B[0]    B[1]    B[2] ... ... B[N-2]    B[N-1]
+        # I      =    I[0]    I[1]    I[2] ... ... I[N-2]    I[N-1]
+        # I[:-1] =      x      x        x             x
+        # I[1:]  =             x        x             x        x
+        
+        A[1:-1] = (I[:-1] - I[1:] * np.exp(-1j * phi)) / (2j * np.sin(phi))
 
+        B[1:-1] = (I[:-1] - I[1:] * np.exp(1j * phi)) / (-2j * np.sin(phi))
+
+        # Output cell
+        A[-1] = (A[-2] * (1 - abs(B[-2] / A[-2])) * np.exp(1j * phi[-1]))
         B[-1] = 0
 
+        # Input cell ([1], Eq. 13)
         A[0] = A[1] * np.exp(1j * phi[0])
-
+        # From Eq. 13 B[0] = A[0]*S11*exp(-2jphi0), with phi0 the phase offset 
+        # of the input waveguide.
+        # This can be computed from Eq. 14: exp(-2jphi0)=-j*|dref[0]|/dref[0]
         B[0] = A[0] * gamma0 * (-1j * np.abs(dref[0])) / dref[0]
 
         bdata.d = float(d)
@@ -507,7 +518,7 @@ class BeadPullAnalyzer:
         if bdata.A is None or bdata.B is None:
             raise ValueError("Cannot compute local reflection before `A` and `B` exist.")
 
-        vg = bdata.vg
+        vg = bdata.vg # Notice this is vg_ including the in and out cells but not the further interpolation done in the calculations
         phi = bdata.phi
         phi0 = bdata.phi0
         fref = bdata.fref
@@ -518,8 +529,11 @@ class BeadPullAnalyzer:
         B = bdata.B
         att = bdata.att
 
+        # Using a mean phase value for filling the array in a first pass 
+        # (it will be overwritten)
         mean_phi_inner = float(np.mean(phi[1:-1]))
 
+        # From [1], Eq. 11
         s11local = (
             B[:-1] - B[1:] * np.exp(-1j * mean_phi_inner)
         ) / A[:-1]
@@ -528,6 +542,8 @@ class BeadPullAnalyzer:
             B[:-1] - B[1:] * np.exp(-1j * mean_phi_inner)
         ) / A[:-1]
 
+        # Now truly Eq. 11 with 2<=n<=N-1; Notice, we are still missing the 
+        # correct values in input and output
         s11local[1:] = (
             B[1:-1] - B[2:] * np.exp(-1j * phi)
         ) / A[1:-1]
@@ -536,10 +552,14 @@ class BeadPullAnalyzer:
             B[1:-1] - B[2:] * np.exp(-1j * phi)
         ) / A[1:-1]
 
+        # Including losses
         ds11global = ds11local * att[:len(ds11local)]
 
+        # Local correction for frequency variation due to temperature (bpparse.m line 273)
+            # Store a copy
         s11local_org = np.array(s11local, copy=True)
 
+        # Compute temperature correction based on frequency shifts
         ds11local_dtemp = (
             1j
             * (f0 - f1)
@@ -549,8 +569,10 @@ class BeadPullAnalyzer:
             / vg
         )
 
+        # Compute again s11 local adding this correction
         s11local = s11local + ds11local_dtemp
 
+        # Global correction for s11
         ds11 = (
             np.imag(ds11global)
             + (f1 - f0)
@@ -561,6 +583,7 @@ class BeadPullAnalyzer:
             * att[:len(ds11local)]
         )
 
+        # Frequency shift to apply to each cell
         df2tune = (
             np.imag(ds11local)
             / (v_particles * phi0 / vg)
