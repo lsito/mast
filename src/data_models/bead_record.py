@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import re
+from scipy.constants import c as c0
+from scipy.interpolate import CubicSpline
 
 from src.data_models.bead_config import BeadpullConfig
 from src.data_models.meas_config import MeasurementConfig
@@ -95,50 +97,35 @@ class BeadpullRecord:
     @property
     def DeltaF(self) -> float:
         """
-        Return the normalized frequency detuning.
-
-        This follows the notebook definition:
-
-        `DeltaF = -2 * (f1 - f0) / f0`
+        Return the normalized frequency detuning. ([1], Eq. (3))
         """
         return -2 * (self.f1 - self.f0) / self.f0
+
+    # Group velocity interpolation
+    # This is a list of group velocities for each cell, given in the json config
+    # file, apparently at the beginning of the cell (0, 1, 2, ..., noc-1).
+    # We need vg at the middle of the cell (0.5, 1.5, ..., noc-0.5) for the 
+    # calculation of Qe and beta, so we need to interpolate with a cubic spline
+    # 0.5   1   1.5   2   2.5   3   ...
+    #  |    *    |    *    |    *
+    #      vg1       vg2       vg3 
 
     @property
     def vg(self) -> np.ndarray:
         """
-        Return the group velocity array from `RF_params`.
-
-        This follows the notebook line:
-
-        `vg = RF_params.vg_`
-
-        In the notebook, this is the group velocity array given in the JSON
-        structure configuration file.
+        Return the group velocity array from `RF_params` given in the JSON
+        structure configuration file. Notice, this is interpolated once.
         """
         return np.asarray(self.RF_params.vg_, dtype=float)
 
     @property
     def noc(self) -> int:
-        """
-        Return the number of cells.
-
-        This follows the notebook line:
-
-        `noc = RF_params.noc`
-        """
         return int(self.RF_params.noc)
 
     @property
     def x(self) -> np.ndarray:
         """
         Return the original cell-position vector used for interpolation.
-
-        This follows the notebook line:
-
-        `x = np.arange(1, noc + 1)`
-
-        The indexing is intentionally MATLAB-like because the original calculation
-        was translated from MATLAB.
         """
         return np.arange(1, self.noc + 1)
 
@@ -146,30 +133,13 @@ class BeadpullRecord:
     def x_interp(self) -> np.ndarray:
         """
         Return the interpolated cell-position vector.
-
-        This follows the notebook line:
-
-        `x_interp = np.arange(0.5, noc + 1 + 0.5)`
-
-        This gives the half-cell shifted positions used to evaluate the group
-        velocity at the effective positions needed for `Qe`.
         """
         return np.arange(0.5, self.noc + 1 + 0.5)
 
     @property
     def vg_(self) -> np.ndarray:
         """
-        Return the interpolated group velocity.
-
-        This follows the notebook lines:
-
-        `spline = CubicSpline(x, vg, bc_type="not-a-knot", extrapolate=True, axis=0)`
-
-        `vg_ = spline(x_interp)`
-
-        The original `vg` array is defined at the structure grid points, while
-        `vg_` is evaluated at the half-cell shifted grid used in the external-Q
-        calculation.
+        Return the group velocity interpolated for a second time. Needed for Qe.
         """
         spline = CubicSpline(
             self.x,
@@ -181,14 +151,12 @@ class BeadpullRecord:
 
         return spline(self.x_interp)
 
+    # External Q approximated from [1], Eq. (5)
+    # This is the phase advance (NOT per cell), given in the json config file
     @property
     def phi0(self) -> float:
         """
         Return the reference phase advance.
-
-        This follows the notebook line:
-
-        `phi0 = RF_params.phi0`
         """
         return float(self.RF_params.phi0)
 
@@ -196,22 +164,24 @@ class BeadpullRecord:
     def Q0(self) -> np.ndarray:
         """
         Return the unloaded quality factor array.
-
-        This follows the notebook line:
-
-        `Q0 = RF_params.Q0_`
         """
         return np.asarray(self.RF_params.Q0_, dtype=float)
+
+    # Coupling coefficient beta of each cell from Wangler Chapt.5.5
+    # Qe:      Qe1      Qe2      Qe3      Qe4      Qe5
+    #           |        |        |        |        |
+    # 
+    # beta:   beta1    beta2    beta3    beta4
+    #         uses     uses     uses     uses
+    #         Qe1,Qe2  Qe2,Qe3  Qe3,Qe4  Qe4,Qe5
+    # Notice that here the cell is treated as a single input system; hence the power flowing out of the second 
+    # port is accounted for as power lost
+    # Hence Beta(i) = P_ext(1)/(P0(i)+P_ext(i+1)) = 1/Qe(i) / (1/Q0(i) + 1/Qe(i+1))
 
     @property
     def Qe(self) -> np.ndarray:
         """
         Return the approximated external quality factor array.
-
-        This follows the notebook line:
-
-        `Qe = c0 * phi0 / vg_`
-
         The returned array has length `noc + 1`, because `vg_` is evaluated on the
         half-cell shifted grid.
         """
@@ -221,11 +191,6 @@ class BeadpullRecord:
     def Qe_i(self) -> np.ndarray:
         """
         Return the left-side external-Q array.
-
-        This follows the notebook line:
-
-        `Qe_i = np.array(Qe[:-1])`
-
         It has length `noc`.
         """
         return np.asarray(self.Qe[:-1], dtype=float)
@@ -234,12 +199,6 @@ class BeadpullRecord:
     def Qe_ip1(self) -> np.ndarray:
         """
         Return the right-side external-Q array.
-
-        This follows the notebook line:
-
-        `Qe_ip1 = np.array(Qe[1:])`
-
-        It has length `noc`.
         """
         return np.asarray(self.Qe[1:], dtype=float)
 
@@ -247,46 +206,131 @@ class BeadpullRecord:
     def beta(self) -> np.ndarray:
         """
         Return the coupling coefficient of each cell.
-
-        This follows the notebook expression:
-
-        `beta = (1 / Qe_i) / (1 / Q0 + 1 / Qe_ip1)`
-
         Each cell is treated as a single-input system where the power flowing out
         of the second port is accounted for as power loss.
         """
-    return (1 / self.Qe_i) / (1 / self.Q0 + 1 / self.Qe_ip1)
+        return (1 / self.Qe_i) / (1 / self.Q0 + 1 / self.Qe_ip1)
 
+    @property
+    def gamma_num(self) -> np.ndarray:
+        return (
+            (self.beta - 1) * (self.beta + 1)
+            - self.Qe_i**2 * self.DeltaF**2
+            - 1j * 2 * self.beta * self.Qe_i * self.DeltaF
+        )
 
+    @property
+    def gamma_den(self) -> np.ndarray:
+        return (self.beta + 1) ** 2 + self.Qe_i**2 * self.DeltaF**2
 
+    @property
+    def gamma(self) -> np.ndarray:
+        """
+        Return the input-port reflection coefficient.
+        It corresponds to the reflection from the input port from [1], Eq. (1), 
+        with the same assumptions used in the notebook.
+        """
+        return self.gamma_num / self.gamma_den
 
-    ## Given this temperature, use it for computing target frequency
-    ## Or simply get target frequency from MeasConfig
-    f1: Optional[float] = None
-    DeltaF: Optional[float] = None
+    @property
+    def v_particles(self) -> float:
+        return float(self.RF_params.v_particles)
 
-    
-    vg: Optional[np.ndarray] = None
-    vg_: Optional[np.ndarray] = None
-    phi: Optional[np.ndarray] = None
-    phi0: Optional[float] = None
-    fref: Optional[float] = None
-    v_particles: Optional[float] = None
-    noc: Optional[int] = None
+    @property
+    def alpha(self) -> np.ndarray:
+        """
+        This is [1], Eq. (19) before converting it into a cumulative exponential
+        attenuation factor.
+        """
+        return (self.v_particles * self.phi0) / (self.Q0 * self.vg)
 
-    Q0: Optional[np.ndarray] = None
-    Qe: Optional[np.ndarray] = None
-    Qe_i: Optional[np.ndarray] = None
-    Qe_ip1: Optional[np.ndarray] = None
-    beta: Optional[np.ndarray] = None
-    gamma: Optional[np.ndarray] = None
-    alpha: Optional[np.ndarray] = None
-    att: Optional[np.ndarray] = None
+    @property
+    def att(self) -> np.ndarray:
+        """
+        Return the cumulative attenuation factor.
+        The returned array has length `noc + 1`, matching the forward/backward
+        wave arrays `A` and `B`.
+        """
+        att = np.ones(self.noc + 1)
 
+        att[0] = 1.0
+        att[1:self.noc] = np.exp(-np.cumsum(self.alpha[:-1]))
+        att[-1] = att[-2] * np.exp(-self.alpha[-1])
+
+        return att
+
+    # Import and Computation from BP file will be done in the main using methods
+    # from src/core/beadpull_analyzer.py. The dataclass here acts just as
+    # container
+
+    f: Optional[np.ndarray] = None
     scc11: Optional[np.ndarray] = None
     scc21: Optional[np.ndarray] = None
     scc12: Optional[np.ndarray] = None
     scc22: Optional[np.ndarray] = None
+
+    @property
+    def file_extension(self) -> str:
+        """
+        Return the lowercase file extension of `filename`.
+        """
+        if self.filename is None:
+            raise ValueError("Cannot determine file extension because filename is None.")
+
+        return Path(self.filename).suffix.lower()
+
+    @property
+    def use_S_output_for_BP(self) -> bool:
+        """
+        Return the bead-pull signal-selection option.
+        """
+        return bool(self.BP_options.use_S_output_for_BP)
+
+
+    @property
+    def aorg(self) -> np.ndarray:
+        """
+        Return the original selected bead-pull signal.
+
+        This follows the notebook logic:
+
+        If `use_S_output_for_BP` is False, use `scc11`.
+
+        If `use_S_output_for_BP` is True, use `scc22`.
+
+        If the selected signal appears to be in milli-units, convert it by
+        multiplying by `1e-3`.
+
+        If `RF_params.option_inverse` is True, reverse the signal.
+        """
+        if self.scc11 is None or self.scc22 is None:
+            raise ValueError("Cannot compute `aorg` before reading the bead-pull CSV.")
+
+        if not self.use_S_output_for_BP:
+            aorg = self.scc11
+        else:
+            aorg = self.scc22
+
+        aorg = np.asarray(aorg, dtype=np.complex128)
+
+        if np.max(np.abs(aorg)) > 1:
+            aorg = 1e-3 * aorg
+
+        if self.RF_params.option_inverse:
+            aorg = aorg[::-1]
+
+        return aorg
+
+    @property
+    def sorg(self) -> np.ndarray:
+        """
+        Return a copy of `aorg`.
+
+        This follows the notebook line:
+
+        `sorg = aorg.copy()`
+        """
+        return self.aorg.copy()
 
     aorg: Optional[np.ndarray] = None
     sorg: Optional[np.ndarray] = None
