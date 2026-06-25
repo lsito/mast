@@ -279,6 +279,8 @@ class BeadpullRecord:
 
         return Path(self.filename).suffix.lower()
 
+    ## If the structure was measured with Ports (1, 3) as input, then we take scc11
+    ## If the structure was measured with Ports (2, 4) as input, then we take scc22
     @property
     def use_S_output_for_BP(self) -> bool:
         """
