@@ -289,51 +289,6 @@ class BeadpullRecord:
         return bool(self.BP_options.use_S_output_for_BP)
 
 
-    @property
-    def aorg(self) -> np.ndarray:
-        """
-        Return the original selected bead-pull signal.
-
-        This follows the notebook logic:
-
-        If `use_S_output_for_BP` is False, use `scc11`.
-
-        If `use_S_output_for_BP` is True, use `scc22`.
-
-        If the selected signal appears to be in milli-units, convert it by
-        multiplying by `1e-3`.
-
-        If `RF_params.option_inverse` is True, reverse the signal.
-        """
-        if self.scc11 is None or self.scc22 is None:
-            raise ValueError("Cannot compute `aorg` before reading the bead-pull CSV.")
-
-        if not self.use_S_output_for_BP:
-            aorg = self.scc11
-        else:
-            aorg = self.scc22
-
-        aorg = np.asarray(aorg, dtype=np.complex128)
-
-        if np.max(np.abs(aorg)) > 1:
-            aorg = 1e-3 * aorg
-
-        if self.RF_params.option_inverse:
-            aorg = aorg[::-1]
-
-        return aorg
-
-    @property
-    def sorg(self) -> np.ndarray:
-        """
-        Return a copy of `aorg`.
-
-        This follows the notebook line:
-
-        `sorg = aorg.copy()`
-        """
-        return self.aorg.copy()
-
     aorg: Optional[np.ndarray] = None
     sorg: Optional[np.ndarray] = None
 
@@ -342,6 +297,14 @@ class BeadpullRecord:
     a_zero_lr: Optional[np.ndarray] = None
     a_zero: Optional[np.ndarray] = None
     a: Optional[np.ndarray] = None
+
+    zero_region: Optional[np.ndarray] = None
+    abs_signal_sorted: Optional[np.ndarray] = None
+    reference_amplitude: Optional[float] = None
+    relative_zero_residual: Optional[np.ndarray] = None
+    relative_zero_sorted: Optional[np.ndarray] = None
+    third_largest_residual: Optional[float] = None
+    zero_line_passed: Optional[bool] = None
 
     atp: Optional[np.ndarray] = None
     threshold: Optional[float] = None
@@ -362,6 +325,13 @@ class BeadpullRecord:
     bad_peaks_idx: Optional[np.ndarray] = None
     bad_peaks_number: Optional[np.ndarray] = None
 
+    @property
+    def phi(self) -> np.ndarray:
+        """
+        Return the per-cell phase advance array.
+        """
+        return np.asarray(self.RF_params.phi, dtype=float)
+
     phase: Optional[np.ndarray] = None
     phase_peaks: Optional[np.ndarray] = None
     dphase_peaks: Optional[np.ndarray] = None
@@ -375,6 +345,13 @@ class BeadpullRecord:
     phiadv: Optional[np.ndarray] = None
     phimean: Optional[float] = None
     phisig: Optional[float] = None
+
+    @property
+    def fref(self) -> float:
+        """
+        Return the reference frequency.
+        """
+        return float(self.RF_params.fref)
 
     d: Optional[float] = None
     rovq: Optional[np.ndarray] = None
@@ -403,19 +380,16 @@ class BeadpullRecord:
     info: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def path(self) -> Optional[Path]:
+    def rovq_(self) -> np.ndarray:
         """
-        Return `filename` as a `Path`.
+        Return the base R/Q array from `RF_params`.
         """
-        if self.filename is None:
-            return None
-
-        return Path(self.filename)
+        return np.asarray(self.RF_params.rovq_, dtype=float)
 
     @property
     def has_tuning_results(self) -> bool:
         """
-        Return True when `ds11` and `df2tune` have been computed.
+        Return True if the main tuning quantities have been computed.
         """
         return self.ds11 is not None and self.df2tune is not None
 
@@ -428,6 +402,7 @@ class BeadpullRecord:
             "f0": self.f0,
             "f1": self.f1,
             "DeltaF": self.DeltaF,
+            "temperature_degC": self.temperature_degC,
             "noc": self.noc,
             "nop": self.nop,
             "phimean": self.phimean,
