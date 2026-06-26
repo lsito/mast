@@ -1,9 +1,30 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
+
+
+MAIN_AXES_RECT = [0.10, 0.12, 0.74, 0.78]
+
+STACKED_AXES_RECTS = [
+    [0.10, 0.70, 0.74, 0.22],
+    [0.10, 0.40, 0.74, 0.22],
+    [0.10, 0.10, 0.74, 0.22],
+]
+
+ZERO_LINE_AXES_RECTS = [
+    [0.08, 0.57, 0.37, 0.30],
+    [0.08, 0.14, 0.37, 0.30],
+    [0.56, 0.25, 0.34, 0.48],
+]
+
+STACKED_PLOT_KEYS = {
+    "local_s11_cell",
+    "wbn",
+    "wfn",
+}
 
 
 def record_label(bdata) -> str:
@@ -16,55 +37,27 @@ def record_label(bdata) -> str:
     return Path(bdata.filename).name
 
 
-def remove_extra_axes(ax, colorbar_ax=None) -> None:
+def get_record_array(bdata, *names):
     """
-    Remove old dynamic colorbar axes while preserving fixed axes.
+    Return the first existing non-empty array from a bead-pull record.
+
+    This supports both notebook-style names and application-style names.
     """
-    figure = ax.figure
-    allowed_axes = {ax}
+    for name in names:
+        if hasattr(bdata, name):
+            value = getattr(bdata, name)
 
-    if colorbar_ax is not None:
-        allowed_axes.add(colorbar_ax)
+            if value is not None:
+                return value
 
-    for extra_ax in list(figure.axes):
-        if extra_ax not in allowed_axes:
-            extra_ax.remove()
+    if hasattr(bdata, "info") and isinstance(bdata.info, dict):
+        for name in names:
+            value = bdata.info.get(name)
 
+            if value is not None:
+                return value
 
-def clear_colorbar_axis(colorbar_ax) -> None:
-    """
-    Clear and hide the fixed colorbar axes.
-    """
-    if colorbar_ax is None:
-        return
-
-    colorbar_ax.clear()
-    colorbar_ax.set_visible(False)
-
-
-def style_axes(ax) -> None:
-    """
-    Apply common plot styling.
-    """
-    ax.grid(
-        True,
-        linestyle="--",
-        linewidth=0.7,
-        alpha=0.35,
-    )
-
-    ax.tick_params(
-        axis="both",
-        labelsize=11,
-        width=0.8,
-        colors="#374151",
-    )
-
-    for spine in ax.spines.values():
-        spine.set_linewidth(0.8)
-        spine.set_color("#cbd5e1")
-
-    ax.set_facecolor("#ffffff")
+    return None
 
 
 def plot_records(
@@ -75,16 +68,24 @@ def plot_records(
     colorbar_ax=None,
 ) -> None:
     """
-    Plot the requested bead-pull records on one axes.
+    Plot all selected bead-pull records.
+
+    Single-axes plots use the fixed main axes. Abs/Re/Im plots use three fixed
+    stacked axes. The 0-Line plot uses a MATLAB-like three-panel layout.
     """
     records = list(records)
 
-    remove_extra_axes(ax, colorbar_ax=colorbar_ax)
-    clear_colorbar_axis(colorbar_ax)
+    if plot_key == "zero_line":
+        zero_line_axes = prepare_zero_line_axes(ax, colorbar_ax)
+        plot_zero_line_records(zero_line_axes, records, legend)
+        return
 
-    ax.clear()
-    ax.set_aspect("auto")
-    style_axes(ax)
+    if plot_key in STACKED_PLOT_KEYS:
+        stacked_axes = prepare_stacked_axes(ax, colorbar_ax)
+        plot_stacked_records(stacked_axes, records, plot_key, legend)
+        return
+
+    prepare_single_axes(ax, colorbar_ax)
 
     colorbar_mappable = None
 
@@ -112,6 +113,106 @@ def plot_records(
         )
 
 
+def prepare_single_axes(ax, colorbar_ax=None) -> None:
+    """
+    Prepare the figure for a single-axes plot.
+    """
+    figure = ax.figure
+
+    for extra_ax in list(figure.axes):
+        if extra_ax not in {ax, colorbar_ax}:
+            extra_ax.remove()
+
+    ax.set_visible(True)
+    ax.set_position(MAIN_AXES_RECT)
+    ax.clear()
+    ax.set_aspect("auto")
+    style_axes(ax)
+
+    if colorbar_ax is not None:
+        colorbar_ax.clear()
+        colorbar_ax.set_visible(False)
+
+
+def prepare_stacked_axes(ax, colorbar_ax=None) -> list:
+    """
+    Prepare the figure for a three-panel Abs/Re/Im plot.
+    """
+    figure = ax.figure
+
+    for extra_ax in list(figure.axes):
+        if extra_ax not in {ax, colorbar_ax}:
+            extra_ax.remove()
+
+    ax.clear()
+    ax.set_visible(False)
+
+    if colorbar_ax is not None:
+        colorbar_ax.clear()
+        colorbar_ax.set_visible(False)
+
+    stacked_axes = []
+
+    for rect in STACKED_AXES_RECTS:
+        stacked_ax = figure.add_axes(rect)
+        style_axes(stacked_ax)
+        stacked_axes.append(stacked_ax)
+
+    return stacked_axes
+
+
+def prepare_zero_line_axes(ax, colorbar_ax=None) -> list:
+    """
+    Prepare the figure for the MATLAB-like 0-Line diagnostic layout.
+    """
+    figure = ax.figure
+
+    for extra_ax in list(figure.axes):
+        if extra_ax not in {ax, colorbar_ax}:
+            extra_ax.remove()
+
+    ax.clear()
+    ax.set_visible(False)
+
+    if colorbar_ax is not None:
+        colorbar_ax.clear()
+        colorbar_ax.set_visible(False)
+
+    zero_line_axes = []
+
+    for rect in ZERO_LINE_AXES_RECTS:
+        zero_ax = figure.add_axes(rect)
+        style_axes(zero_ax)
+        zero_line_axes.append(zero_ax)
+
+    return zero_line_axes
+
+
+def style_axes(ax) -> None:
+    """
+    Apply common axes styling.
+    """
+    ax.grid(
+        True,
+        linestyle="--",
+        linewidth=0.7,
+        alpha=0.35,
+    )
+
+    ax.tick_params(
+        axis="both",
+        labelsize=11,
+        width=0.8,
+        colors="#374151",
+    )
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.8)
+        spine.set_color("#cbd5e1")
+
+    ax.set_facecolor("#ffffff")
+
+
 def plot_single_record(ax, bdata, plot_key: str):
     """
     Plot one bead-pull record using the selected plot type.
@@ -125,7 +226,7 @@ def plot_single_record(ax, bdata, plot_key: str):
         plot_line_array(ax, bdata.phiadv, scale=1.0, label=label)
 
     elif plot_key == "s11_beadpull":
-        return plot_complex_signal(
+        return plot_complex_trajectory(
             ax=ax,
             bdata=bdata,
             label=label,
@@ -133,7 +234,7 @@ def plot_single_record(ax, bdata, plot_key: str):
         )
 
     elif plot_key == "ds11_bp":
-        return plot_complex_signal(
+        return plot_complex_trajectory(
             ax=ax,
             bdata=bdata,
             label=label,
@@ -141,75 +242,372 @@ def plot_single_record(ax, bdata, plot_key: str):
         )
 
     elif plot_key == "abs_ds11_bp":
-        return plot_abs_ds11_bp_samples(ax, bdata, label)
+        plot_sample_signal(
+            ax=ax,
+            label=label,
+            signal=get_ds11_bp_signal(bdata),
+            transform=np.abs,
+        )
 
     elif plot_key == "abs_ds11_bp_z":
-        return plot_abs_ds11_bp_z(ax, bdata, label)
+        plot_z_signal(
+            ax=ax,
+            bdata=bdata,
+            label=label,
+            signal=get_ds11_bp_signal(bdata),
+            transform=np.abs,
+            integer_ticks=True,
+        )
 
     elif plot_key == "mag_e":
-        if bdata.Ebp is not None:
-            plot_cell_array(ax, np.abs(bdata.Ebp), scale=1.0, label=label)
+        plot_sample_signal(
+            ax=ax,
+            label=label,
+            signal=get_ds11_bp_signal(bdata),
+            transform=lambda values: np.sqrt(np.abs(values)),
+        )
 
     elif plot_key == "mag_peaks_e":
-        if bdata.dref is not None:
-            plot_cell_array(ax, np.sqrt(np.abs(bdata.dref)), scale=1.0, label=label)
-
-    elif plot_key == "zero_line":
-        plot_zero_line(ax, bdata, label)
+        plot_mag_peaks_e(ax, bdata, label)
 
     elif plot_key == "pm_abs_ds11":
-        plot_pm_abs_ds11(ax, bdata, label)
+        plot_signed_ds11(ax, bdata, label)
 
     elif plot_key == "phi_vs_freq":
-        if bdata.gamma is not None:
-            plot_cell_array(ax, np.angle(bdata.gamma), scale=1.0, label=label)
+        plot_phi_vs_frequency(ax, bdata, label)
 
     elif plot_key == "local_s11":
-        plot_local_s11(ax, bdata, label)
-
-    elif plot_key == "local_s11_cell":
-        if bdata.s11local is not None:
-            plot_cell_array(ax, np.abs(bdata.s11local), scale=1e3, label=label)
-
-    elif plot_key == "wbn":
-        if bdata.B is not None:
-            plot_cell_array(
-                ax,
-                np.abs(bdata.B),
-                scale=1.0,
-                label=label,
-                start_at_zero=True,
-            )
-
-    elif plot_key == "wfn":
-        if bdata.A is not None:
-            plot_cell_array(
-                ax,
-                np.abs(bdata.A),
-                scale=1.0,
-                label=label,
-                start_at_zero=True,
-            )
+        plot_complex_cells(ax, bdata.s11local, label)
 
     elif plot_key == "arg_ds11_bp_z":
-        if bdata.ds11global is not None:
-            plot_cell_array(ax, np.angle(bdata.ds11global), scale=1.0, label=label)
+        plot_z_signal(
+            ax=ax,
+            bdata=bdata,
+            label=label,
+            signal=get_ds11_bp_signal(bdata),
+            transform=unwrapped_phase_degrees,
+            integer_ticks=True,
+            line_color="#8e44ad",
+        )
 
     elif plot_key == "abs_arg_ds11_bp_z":
-        if bdata.ds11global is not None:
-            plot_cell_array(
-                ax,
-                np.abs(np.angle(bdata.ds11global)),
-                scale=1.0,
-                label=label,
-            )
+        plot_z_signal(
+            ax=ax,
+            bdata=bdata,
+            label=label,
+            signal=get_ds11_bp_signal(bdata),
+            transform=wrapped_negative_phase_degrees,
+            integer_ticks=True,
+        )
 
     return None
+
+
+def plot_zero_line_records(axes, records: list, legend: bool = False) -> None:
+    """
+    Plot the MATLAB-like 0-Line diagnostic.
+
+    Top-left panel shows Re(S11) and Im(S11) against sample coordinate.
+    Bottom-left panel shows Abs(S11) against sample coordinate.
+    Right panel shows the complex S11 trajectory.
+    """
+    re_im_ax, abs_ax, complex_ax = axes
+
+    for bdata in records:
+        signal = get_s11_signal(bdata)
+
+        if signal is None:
+            continue
+
+        signal = np.asarray(signal, dtype=np.complex128)
+        x = np.arange(len(signal))
+
+        re_im_ax.plot(
+            x,
+            np.real(signal),
+            linewidth=0.9,
+            color="blue",
+            label="Re",
+        )
+
+        re_im_ax.plot(
+            x,
+            np.imag(signal),
+            linewidth=0.9,
+            color="magenta",
+            label="Im",
+        )
+
+        abs_ax.plot(
+            x,
+            np.abs(signal),
+            linewidth=0.9,
+            color="red",
+            label="abs(aorg)",
+        )
+
+        complex_ax.plot(
+            np.real(signal),
+            np.imag(signal),
+            linewidth=0.9,
+            color="limegreen",
+            label="aorg",
+        )
+
+        if getattr(bdata, "a_zero", None) is not None:
+            zero_line = np.asarray(bdata.a_zero, dtype=np.complex128)
+
+            if len(zero_line) == len(signal):
+                re_im_ax.plot(
+                    x,
+                    np.real(zero_line),
+                    linewidth=1.0,
+                    linestyle="--",
+                    color="green",
+                    alpha=0.85,
+                    label="Re zero-line",
+                )
+
+                re_im_ax.plot(
+                    x,
+                    np.imag(zero_line),
+                    linewidth=1.0,
+                    linestyle="--",
+                    color="red",
+                    alpha=0.85,
+                    label="Im zero-line",
+                )
+
+                abs_ax.plot(
+                    x,
+                    np.abs(zero_line),
+                    linewidth=1.0,
+                    linestyle="--",
+                    color="orange",
+                    alpha=0.85,
+                    label="abs(a_zero)",
+                )
+
+                complex_ax.plot(
+                    np.real(zero_line),
+                    np.imag(zero_line),
+                    linewidth=1.0,
+                    linestyle="--",
+                    color="orange",
+                    alpha=0.85,
+                    label="a_zero",
+                )
+
+    re_im_ax.set_title("")
+    abs_ax.set_title("")
+    complex_ax.set_title("")
+
+    re_im_ax.set_xlabel("z", fontsize=11)
+    re_im_ax.set_ylabel("Re(S11) and Im(S11)", fontsize=11)
+
+    abs_ax.set_xlabel("z", fontsize=11)
+    abs_ax.set_ylabel("Abs(S11)", fontsize=11)
+
+    complex_ax.set_xlabel("Re(S11)", fontsize=11)
+    complex_ax.set_ylabel("Im(S11)", fontsize=11)
+    complex_ax.set_aspect("equal", adjustable="datalim")
+
+    for axis in axes:
+        style_axes(axis)
+
+    re_im_ax.legend(
+        fontsize=8,
+        frameon=True,
+        framealpha=0.9,
+        edgecolor="#cbd5e1",
+        facecolor="#ffffff",
+    )
+
+    abs_ax.legend(
+        fontsize=8,
+        frameon=True,
+        framealpha=0.9,
+        edgecolor="#cbd5e1",
+        facecolor="#ffffff",
+    )
+
+    complex_ax.legend(
+        fontsize=8,
+        frameon=True,
+        framealpha=0.9,
+        edgecolor="#cbd5e1",
+        facecolor="#ffffff",
+    )
+
+
+def plot_stacked_records(axes, records: list, plot_key: str, legend: bool = False) -> None:
+    """
+    Plot Abs/Re/Im panels for all selected records.
+    """
+    plotted_anything = False
+
+    for bdata in records:
+        label = record_label(bdata)
+        values, scale, unit, start_at_zero = stacked_values_for_key(bdata, plot_key)
+
+        if values is None:
+            continue
+
+        values = np.asarray(values)
+
+        if values.size == 0:
+            continue
+
+        plotted_anything = True
+
+        plot_abs_re_im_stack(
+            axes=axes,
+            values=values,
+            scale=scale,
+            unit=unit,
+            label=label,
+            start_at_zero=start_at_zero,
+        )
+
+    title, xlabel = stacked_title_for_key(plot_key)
+
+    axes[0].set_title(title, fontsize=14, fontweight="600", pad=8)
+    axes[2].set_xlabel(xlabel, fontsize=12)
+
+    for index, axis in enumerate(axes):
+        axis.tick_params(axis="both", labelsize=10)
+
+        if index < 2:
+            axis.tick_params(labelbottom=False)
+
+    if not plotted_anything:
+        for axis in axes:
+            axis.text(
+                0.5,
+                0.5,
+                "No data available for this plot",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                fontsize=11,
+                color="#6b7280",
+            )
+
+    if legend and plotted_anything:
+        axes[0].legend(
+            fontsize=8,
+            frameon=True,
+            framealpha=0.9,
+            edgecolor="#cbd5e1",
+            facecolor="#ffffff",
+        )
+
+
+def stacked_values_for_key(bdata, plot_key: str):
+    """
+    Return the complex values and display format for stacked plots.
+
+    GUI names:
+    local S11(cell) -> bdata.s11local
+    wbn             -> bdata.B, fallback bdata.wbn
+    wfn             -> bdata.A, fallback bdata.wfn
+    """
+    if plot_key == "local_s11_cell":
+        values = get_record_array(
+            bdata,
+            "s11local",
+            "s11local_org",
+        )
+        return values, 100.0, "%", False
+
+    if plot_key == "wbn":
+        values = get_record_array(
+            bdata,
+            "B",
+            "wbn",
+        )
+        return values, 1e3, "mU", True
+
+    if plot_key == "wfn":
+        values = get_record_array(
+            bdata,
+            "A",
+            "wfn",
+        )
+        return values, 1e3, "mU", True
+
+    return None, 1.0, "", False
+
+
+def stacked_title_for_key(plot_key: str) -> tuple[str, str]:
+    """
+    Return title and x-axis label for stacked plots.
+    """
+    titles = {
+        "local_s11_cell": ("local S11(cell)", "Cell"),
+        "wbn": ("B / wbn", "Cell boundary"),
+        "wfn": ("A / wfn", "Cell boundary"),
+    }
+
+    return titles.get(plot_key, ("Stacked plot", "Index"))
+
+
+def plot_abs_re_im_stack(
+    axes,
+    values,
+    scale: float,
+    unit: str,
+    label: str,
+    start_at_zero: bool,
+) -> None:
+    """
+    Plot Abs/Re/Im of a complex array on three stacked axes.
+    """
+    values = np.asarray(values, dtype=np.complex128) * scale
+
+    if values.size == 0:
+        return
+
+    if start_at_zero:
+        x = np.arange(len(values))
+    else:
+        x = np.arange(1, len(values) + 1)
+
+    y_values = [
+        np.abs(values),
+        np.real(values),
+        np.imag(values),
+    ]
+
+    y_labels = [
+        f"Abs [{unit}]",
+        f"Re [{unit}]",
+        f"Im [{unit}]",
+    ]
+
+    for axis, y, y_label in zip(axes, y_values, y_labels):
+        axis.plot(
+            x,
+            y,
+            marker="o",
+            markersize=5.8,
+            markeredgewidth=1.0,
+            linewidth=1.1,
+            markerfacecolor="none",
+            label=label,
+        )
+        axis.set_ylabel(y_label, fontsize=11)
+        style_axes(axis)
 
 
 def get_s11_signal(bdata):
     """
     Return the best available raw S11 bead-pull signal.
+
+    Priority:
+    1. `sorg`
+    2. `aorg`
+    3. `a`
     """
     if getattr(bdata, "sorg", None) is not None:
         return bdata.sorg
@@ -226,6 +624,11 @@ def get_s11_signal(bdata):
 def get_ds11_bp_signal(bdata):
     """
     Return the best available zero-line-subtracted bead-pull signal.
+
+    Priority:
+    1. `a`
+    2. `atp`
+    3. `sorg`
     """
     if getattr(bdata, "a", None) is not None:
         return bdata.a
@@ -239,12 +642,9 @@ def get_ds11_bp_signal(bdata):
     return None
 
 
-def plot_complex_signal(ax, bdata, label: str, signal):
+def plot_complex_trajectory(ax, bdata, label: str, signal):
     """
-    Plot a complex bead-pull trajectory.
-
-    The full trajectory is shown as a line. Detected peak positions are shown
-    as colored open circles.
+    Plot a complex trajectory with colored peak markers.
     """
     if signal is None:
         return None
@@ -296,111 +696,82 @@ def plot_peak_markers_on_complex_signal(ax, bdata, signal):
     return scatter
 
 
-def plot_abs_ds11_bp_samples(ax, bdata, label: str):
+def plot_sample_signal(
+    ax,
+    label: str,
+    signal,
+    transform: Callable,
+    line_color=None,
+) -> None:
     """
-    Plot |dS11 BP| against raw sample index.
+    Plot a transformed complex signal against raw sample index.
     """
-    signal = get_ds11_bp_signal(bdata)
-
     if signal is None:
-        return None
+        return
 
     signal = np.asarray(signal, dtype=np.complex128)
     x = np.arange(len(signal))
-    y = np.abs(signal)
+    y = transform(signal)
 
-    ax.plot(
-        x,
-        y,
-        linewidth=1.0,
-        alpha=0.95,
-        label=label,
-    )
+    plot_kwargs = {
+        "linewidth": 1.0,
+        "alpha": 0.95,
+        "label": label,
+    }
 
-    if bdata.locpk is None or len(bdata.locpk) == 0:
-        return None
+    if line_color is not None:
+        plot_kwargs["color"] = line_color
 
-    locpk = valid_peak_indices(bdata.locpk, len(signal))
-
-    if len(locpk) == 0:
-        return None
-
-    colors = np.linspace(0.0, 1.0, len(locpk))
-
-    scatter = ax.scatter(
-        locpk,
-        y[locpk],
-        c=colors,
-        cmap="jet",
-        s=38,
-        marker="o",
-        facecolors="none",
-        linewidths=1.3,
-        zorder=4,
-    )
-
-    return scatter
+    ax.plot(x, y, **plot_kwargs)
 
 
-def plot_abs_ds11_bp_z(ax, bdata, label: str):
+def plot_z_signal(
+    ax,
+    bdata,
+    label: str,
+    signal,
+    transform: Callable,
+    integer_ticks: bool = False,
+    line_color=None,
+) -> None:
     """
-    Plot |dS11 BP| against bead-pull cell coordinate z.
-
-    The detected peak positions define integer cell coordinates.
+    Plot a transformed complex signal against bead-pull cell coordinate z.
     """
-    signal = get_ds11_bp_signal(bdata)
-
     if signal is None:
-        return None
+        return
 
     signal = np.asarray(signal, dtype=np.complex128)
-    y = np.abs(signal)
+    y = transform(signal)
 
     if bdata.locpk is None or len(bdata.locpk) < 2:
         x = np.arange(len(y))
-        ax.plot(x, y, linewidth=1.0, alpha=0.95, label=label)
-        return None
+    else:
+        locpk = valid_peak_indices(bdata.locpk, len(signal))
 
-    locpk = valid_peak_indices(bdata.locpk, len(signal))
+        if len(locpk) < 2:
+            x = np.arange(len(y))
+        else:
+            x = sample_index_to_cell_coordinate(
+                sample_indices=np.arange(len(y)),
+                peak_indices=locpk,
+            )
 
-    if len(locpk) < 2:
-        x = np.arange(len(y))
-        ax.plot(x, y, linewidth=1.0, alpha=0.95, label=label)
-        return None
+    plot_kwargs = {
+        "linewidth": 1.0,
+        "alpha": 0.95,
+        "label": label,
+    }
 
-    z = sample_index_to_cell_coordinate(
-        sample_indices=np.arange(len(y)),
-        peak_indices=locpk,
-    )
+    if line_color is not None:
+        plot_kwargs["color"] = line_color
 
-    ax.plot(
-        z,
-        y,
-        linewidth=1.0,
-        alpha=0.95,
-        label=label,
-    )
+    ax.plot(x, y, **plot_kwargs)
 
-    colors = np.linspace(0.0, 1.0, len(locpk))
-    cell_positions = np.arange(1, len(locpk) + 1)
-
-    scatter = ax.scatter(
-        cell_positions,
-        y[locpk],
-        c=colors,
-        cmap="jet",
-        s=38,
-        marker="o",
-        facecolors="none",
-        linewidths=1.3,
-        zorder=4,
-    )
-
-    ax.set_xlim(0, len(locpk) + 1)
-    ax.set_xticks(np.arange(0, len(locpk) + 2, 1))
-    ax.tick_params(axis="x", labelrotation=90)
-
-    return scatter
+    if integer_ticks and bdata.locpk is not None:
+        number_of_cells = len(bdata.locpk)
+        ax.set_xlim(0, number_of_cells + 1)
+        ax.set_xticks(np.arange(0, number_of_cells + 2, 1))
+        ax.tick_params(axis="x", labelrotation=90)
 
 
 def sample_index_to_cell_coordinate(
@@ -409,6 +780,8 @@ def sample_index_to_cell_coordinate(
 ) -> np.ndarray:
     """
     Convert raw sample indices to a bead-pull cell coordinate.
+
+    Peak 1 maps to z=1, peak 2 maps to z=2, and so on.
     """
     peak_indices = np.asarray(peak_indices, dtype=float)
     cell_positions = np.arange(1, len(peak_indices) + 1, dtype=float)
@@ -436,6 +809,30 @@ def sample_index_to_cell_coordinate(
     return z
 
 
+def unwrapped_phase_degrees(signal: np.ndarray) -> np.ndarray:
+    """
+    Return unwrapped phase in degrees, starting near zero.
+    """
+    phase = np.rad2deg(np.unwrap(np.angle(signal)))
+    phase = phase - phase[0]
+
+    if len(phase) > 1 and np.nanmean(np.diff(phase)) > 0:
+        phase = -phase
+
+    return phase
+
+
+def wrapped_negative_phase_degrees(signal: np.ndarray) -> np.ndarray:
+    """
+    Return wrapped phase in degrees, displayed mostly in the negative branch.
+    """
+    phase = np.rad2deg(np.angle(signal))
+    phase = phase - phase[0]
+    phase = np.where(phase > 20.0, phase - 360.0, phase)
+
+    return phase
+
+
 def valid_peak_indices(locpk, signal_length: int) -> np.ndarray:
     """
     Return valid integer peak indices.
@@ -446,6 +843,79 @@ def valid_peak_indices(locpk, signal_length: int) -> np.ndarray:
     return locpk
 
 
+def plot_mag_peaks_e(ax, bdata, label: str) -> None:
+    """
+    Plot magnitude of the electric field at detected peaks.
+    """
+    if bdata.Ebp is not None:
+        values = np.abs(bdata.Ebp)
+    elif bdata.dref is not None:
+        values = np.sqrt(np.abs(bdata.dref))
+    else:
+        return
+
+    plot_line_array(ax, values, scale=1.0, label=label)
+
+
+def plot_signed_ds11(ax, bdata, label: str) -> None:
+    """
+    Plot signed dS11 values over cell number.
+    """
+    if bdata.ds11 is None:
+        return
+
+    plot_line_array(ax, bdata.ds11, scale=1.0, label=label)
+
+
+def plot_phi_vs_frequency(ax, bdata, label: str) -> None:
+    """
+    Plot mean phase advance versus bead-pull frequency.
+    """
+    x = bdata.f0 / 1e9
+
+    if bdata.phimean is not None and np.isfinite(bdata.phimean):
+        y = bdata.phimean
+    elif bdata.phiadv is not None and len(bdata.phiadv) > 0:
+        y = float(np.nanmean(bdata.phiadv))
+    else:
+        return
+
+    ax.plot(
+        x,
+        y,
+        marker="o",
+        markersize=7.0,
+        markeredgewidth=1.2,
+        linestyle="None",
+        markerfacecolor="none",
+        label=label,
+    )
+
+    ax.set_xlim(x - 1.5, x + 1.0)
+    ax.set_ylim(y - 1.5, y + 1.0)
+
+
+def plot_complex_cells(ax, values, label: str) -> None:
+    """
+    Plot one complex cell array in the complex plane.
+    """
+    if values is None:
+        return
+
+    values = np.asarray(values, dtype=np.complex128)
+
+    ax.plot(
+        np.real(values),
+        np.imag(values),
+        marker="o",
+        markersize=6.5,
+        markeredgewidth=1.2,
+        linestyle="None",
+        markerfacecolor="none",
+        label=label,
+    )
+
+
 def plot_cell_array(
     ax,
     values,
@@ -454,7 +924,7 @@ def plot_cell_array(
     start_at_zero: bool = False,
 ) -> None:
     """
-    Plot an array against cell number.
+    Plot an array against cell number using markers only.
     """
     if values is None:
         return
@@ -505,85 +975,8 @@ def plot_line_array(
         markersize=6.5,
         markeredgewidth=1.2,
         linewidth=1.3,
+        markerfacecolor="none",
         label=label,
-    )
-
-
-def plot_zero_line(ax, bdata, label: str) -> None:
-    """
-    Plot zero-line diagnostic data.
-    """
-    if bdata.aorg is not None:
-        x = np.arange(len(bdata.aorg))
-        ax.plot(x, np.real(bdata.aorg), label=f"{label} real(aorg)")
-
-    if bdata.a_zero is not None:
-        x = np.arange(len(bdata.a_zero))
-        ax.plot(x, np.real(bdata.a_zero), label=f"{label} real(a_zero)")
-
-
-def plot_pm_abs_ds11(ax, bdata, label: str) -> None:
-    """
-    Plot positive and negative absolute dS11.
-    """
-    if bdata.ds11 is None:
-        return
-
-    y = np.abs(bdata.ds11) * 1e3
-    x = np.arange(1, len(y) + 1)
-
-    ax.plot(
-        x,
-        y,
-        marker="o",
-        markersize=6.5,
-        markeredgewidth=1.2,
-        linestyle="None",
-        markerfacecolor="none",
-        label=f"{label} +",
-    )
-
-    ax.plot(
-        x,
-        -y,
-        marker="o",
-        markersize=6.5,
-        markeredgewidth=1.2,
-        linestyle="None",
-        markerfacecolor="none",
-        label=f"{label} -",
-    )
-
-
-def plot_local_s11(ax, bdata, label: str) -> None:
-    """
-    Plot local S11 real and imaginary parts.
-    """
-    if bdata.s11local is None:
-        return
-
-    x = np.arange(1, len(bdata.s11local) + 1)
-
-    ax.plot(
-        x,
-        np.real(bdata.s11local) * 1e3,
-        marker="o",
-        markersize=6.5,
-        markeredgewidth=1.2,
-        linestyle="None",
-        markerfacecolor="none",
-        label=f"{label} real",
-    )
-
-    ax.plot(
-        x,
-        np.imag(bdata.s11local) * 1e3,
-        marker="o",
-        markersize=6.5,
-        markeredgewidth=1.2,
-        linestyle="None",
-        markerfacecolor="none",
-        label=f"{label} imag",
     )
 
 
@@ -598,17 +991,17 @@ def finish_plot(ax, plot_key: str) -> None:
         "ds11_bp": ("dS11 BP", "Real(dS11 BP)", "Imag(dS11 BP)"),
         "abs_ds11_bp": ("|dS11| BP", "Sample", "|dS11 BP|"),
         "abs_ds11_bp_z": ("|dS11| BP (z)", "Cell coordinate z", "|dS11 BP|"),
-        "mag_e": ("Mag(E)", "Cell", "|E|"),
-        "mag_peaks_e": ("Mag(peaks(E))", "Cell", "sqrt(|dref|)"),
+        "mag_e": ("Mag(E)", "Sample", "|E|"),
+        "mag_peaks_e": ("Mag(peaks(E))", "Cell", "|E peak|"),
         "zero_line": ("0-Line", "Sample", "Real part"),
-        "pm_abs_ds11": ("+/-|dS11|", "Cell", "+/-|dS11| [mU]"),
-        "phi_vs_freq": ("phi v.s. freq", "Cell", "arg(gamma) [rad]"),
-        "local_s11": ("local S11", "Cell", "local S11 [mU]"),
-        "local_s11_cell": ("local S11(cell)", "Cell", "|local S11| [mU]"),
-        "wbn": ("wbn", "Cell boundary", "|wbn|"),
-        "wfn": ("wfn", "Cell boundary", "|wfn|"),
-        "arg_ds11_bp_z": ("arg(dS11) BP (z)", "Cell", "arg(dS11 global) [rad]"),
-        "abs_arg_ds11_bp_z": ("|arg(dS11) BP(z)|", "Cell", "|arg(dS11 global)| [rad]"),
+        "pm_abs_ds11": ("+/-|dS11|", "Cell", "sgn*|dS11|"),
+        "phi_vs_freq": ("phi v.s. freq", "Frequency [GHz]", "Mean phase advance [deg]"),
+        "local_s11": ("local S11", "Real(local S11)", "Imag(local S11)"),
+        "local_s11_cell": ("local S11(cell)", "Cell", "local S11"),
+        "wbn": ("B / wbn", "Cell boundary", "B"),
+        "wfn": ("A / wfn", "Cell boundary", "A"),
+        "arg_ds11_bp_z": ("arg(dS11) BP (z)", "Cell coordinate z", "Unwrapped phase [deg]"),
+        "abs_arg_ds11_bp_z": ("|arg(dS11) BP(z)|", "Cell coordinate z", "Wrapped phase [deg]"),
     }
 
     title, xlabel, ylabel = titles.get(plot_key, ("Plot", "x", "y"))

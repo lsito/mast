@@ -631,10 +631,9 @@ class MainWindow(QMainWindow):
 
     def add_beadpull_file(self) -> None:
         """
-        Add bead-pull files using the bead-pull file dialog.
+        Add one or more bead-pull files and analyze them immediately.
 
-        The dialog is opened repeatedly, allowing each file to have its own
-        frequency, temperature, direction flags, and bead-pull options.
+        The file dialog allows multiple selection using Ctrl/Shift selection.
         """
         if self.RF_params is None:
             QMessageBox.warning(
@@ -644,83 +643,87 @@ class MainWindow(QMainWindow):
             )
             return
 
-        added_any = False
+        filenames, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Load bead-pull files",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
 
-        while True:
-            dialog = BeadpullFileDialog(
-                default_options=self.BP_options,
-                parent=self,
-            )
-
-            if not dialog.exec():
-                break
-
-            self._analyze_and_add_file_from_dialog(dialog)
-            added_any = True
-
-            answer = QMessageBox.question(
-                self,
-                "Add another bead-pull file",
-                "Do you want to add another bead-pull file?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-
-            if answer != QMessageBox.Yes:
-                break
-
-        if not added_any:
+        if not filenames:
             return
+
+        added_count = 0
+        failed_files = []
+
+        for filename in filenames:
+            try:
+                self._analyze_and_add_file(filename)
+                added_count += 1
+            except Exception as exc:
+                failed_files.append((filename, exc))
+
+                if hasattr(self, "terminal"):
+                    self.terminal.write(f"Failed to load {Path(filename).name}: {exc}")
 
         if self.records:
             self.file_list.setCurrentRow(len(self.records) - 1)
 
-        self.beadpull_done = len(self.records) > 0
+        if hasattr(self, "beadpull_done"):
+            self.beadpull_done = len(self.records) > 0
 
-        self._update_step_buttons()
+        if hasattr(self, "_update_step_buttons"):
+            self._update_step_buttons()
+
         self.update_all_views()
         self._update_terminal_namespace()
-        self.statusBar().showMessage("Bead-pull file analysis completed")
 
-    def _analyze_and_add_file_from_dialog(self, dialog: BeadpullFileDialog) -> None:
+        if failed_files:
+            failed_text = "\n".join(
+                f"{Path(filename).name}: {exc}" for filename, exc in failed_files
+            )
+
+            QMessageBox.warning(
+                self,
+                "Some bead-pull files failed",
+                f"{added_count} file(s) loaded successfully.\n\nFailed files:\n{failed_text}",
+            )
+        else:
+            self.statusBar().showMessage(
+                f"{added_count} bead-pull file(s) analyzed successfully"
+            )
+
+            if hasattr(self, "terminal"):
+                self.terminal.write(
+                    f"{added_count} bead-pull file(s) loaded and analyzed."
+                )
+
+
+    def _analyze_and_add_file(self, filename: str) -> None:
         """
-        Analyze one bead-pull file using values from the bead-pull file dialog.
+        Analyze one bead-pull file and append it to the record list.
+
+        The full path is stored in `BeadpullRecord.filename`.
+        The GUI list only displays the filename.
         """
         if self.RF_params is None:
             raise RuntimeError("RF structure must be loaded before analysis.")
 
-        if dialog.filename is None:
-            raise RuntimeError("No bead-pull filename was selected.")
-
-        RF_params = deepcopy(self.RF_params)
-
-        if hasattr(RF_params, "option_inverse"):
-            RF_params.option_inverse = dialog.invert_measurement_direction
-
-        if dialog.invert_rf_structure_parameters:
-            self.terminal.write(
-                "invert RF structure parameters selected. "
-                "Connect this to the RF-structure inversion logic if needed."
-            )
-
-        self.BP_options = deepcopy(dialog.options)
-
         bdata = BeadpullRecord(
-            RF_params=RF_params,
+            RF_params=self.RF_params,
             Meas_params=self.Meas_params,
-            BP_options=deepcopy(dialog.options),
-            filename=dialog.filename,
-            #f0_MHz_override=dialog.f0_MHz_override,
-            #temperature_degC_override=dialog.temperature_degC_override,
+            BP_options=self.BP_options,
+            filename=filename,
         )
 
         self.analyzer.evaluate(bdata)
 
         self.records.append(bdata)
 
-        filename = Path(dialog.filename).name
+        display_name = Path(filename).name
 
-        item = QListWidgetItem(filename)
+        item = QListWidgetItem(display_name)
+        item.setToolTip(filename)
         item.setData(Qt.UserRole, len(self.records) - 1)
         item.setFlags(
             item.flags()
@@ -732,7 +735,8 @@ class MainWindow(QMainWindow):
 
         self.file_list.addItem(item)
 
-        self.terminal.write(f"Loaded and analyzed: {filename}")
+        if hasattr(self, "terminal"):
+            self.terminal.write(f"Loaded and analyzed: {display_name}")
 
     def delete_selected_record(self) -> None:
         """
