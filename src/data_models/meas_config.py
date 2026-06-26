@@ -89,11 +89,12 @@ class MeasurementConfig(DataMixin):
             self.designed_temperature_c - self.rf_measurement_temperature_c
         )
 
+    # TODO: there is no humidity correction; no difference between air and N2
     @property
     def atmosphere_correction_mhz(self):
         if self.atmosphere.lower() == "air":
             return self.designed_frequency_mhz * 0.00029
-        return 0.0
+        return self.designed_frequency_mhz * 0.00029
 
     @property
     def total_correction_mhz(self):

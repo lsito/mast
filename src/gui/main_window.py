@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
+    QAbstractItemView,
     QButtonGroup,
     QGridLayout,
     QGroupBox,
@@ -30,19 +32,24 @@ from src.data_models.bead_config import BeadpullConfig
 from src.data_models.bead_record import BeadpullRecord
 from src.data_models.meas_config import MeasurementConfig
 from src.data_models.rf_structure import RFStructureParams
+from src.gui.beadpull_file_dialog import BeadpullFileDialog
 from src.gui.meas_config_dialog import MeasurementConfigDialog
 from src.gui.plot_canvas import MatlabStylePlotCanvas
 from src.gui.structure_config_dialog import RFStructureLoaderDialog
+from src.gui.terminal_widget import TerminalWidget
 
 
 class MainWindow(QMainWindow):
     """
     MATLAB-like main window for CLIC bead-pull offline analysis.
 
-    The layout mirrors the original MATLAB application:
+    The GUI supports selecting any combination of loaded bead-pull files for
+    plotting. The selected row controls the numerical lists. The checked rows
+    control which files are plotted.
 
-    a large plot on the left, numerical result lists and file controls on the
-    right, and radio buttons for selecting the displayed plot.
+    Bead-pull files are added through `BeadpullFileDialog`, so each file can
+    have its own frequency, temperature, measurement direction, and bead-pull
+    analysis options.
     """
 
     def __init__(self) -> None:
@@ -52,7 +59,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("CLIC Bead-pull Offline Analysis")
-        self.resize(1450, 900)
+        self.resize(1650, 1000)
 
         self.RF_params: RFStructureParams | None = None
         self.Meas_params = MeasurementConfig()
@@ -61,12 +68,19 @@ class MainWindow(QMainWindow):
         self.analyzer = BeadPullAnalyzer()
         self.records: list[BeadpullRecord] = []
         self.current_record_index: int | None = None
+
         self.legend_visible = False
         self.current_plot_key = "df_to_tune"
+
+        self.structure_done = False
+        self.measurement_done = False
+        self.beadpull_done = False
 
         self._build_actions()
         self._build_menu()
         self._build_ui()
+        self._apply_style()
+        self._update_step_buttons()
 
         self.statusBar().showMessage("Ready")
 
@@ -82,6 +96,24 @@ class MainWindow(QMainWindow):
 
         self.action_beadpull_files = QAction("Bead-pull files...", self)
         self.action_beadpull_files.triggered.connect(self.add_beadpull_file)
+
+        self.action_export_current = QAction("Export Current Tuning Table...", self)
+        self.action_export_current.triggered.connect(self.export_current_tuning_table)
+
+        self.action_delete_current = QAction("Delete Current Bead-pull", self)
+        self.action_delete_current.triggered.connect(self.delete_selected_record)
+
+        self.action_clear_all = QAction("Clear All", self)
+        self.action_clear_all.triggered.connect(self.clear_all_records)
+
+        self.action_screenshot = QAction("ScreenShot...", self)
+        self.action_screenshot.triggered.connect(self.save_screenshot)
+
+        self.action_toggle_legend = QAction("Legend On/Off", self)
+        self.action_toggle_legend.triggered.connect(self.toggle_legend)
+
+        self.action_debug_summary = QAction("Debug Summary", self)
+        self.action_debug_summary.triggered.connect(self.show_debug_summary)
 
         self.action_exit = QAction("Exit", self)
         self.action_exit.triggered.connect(self.close)
@@ -100,57 +132,113 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_measurement_condition)
         file_menu.addAction(self.action_beadpull_files)
         file_menu.addSeparator()
+        file_menu.addAction(self.action_export_current)
+        file_menu.addAction(self.action_screenshot)
+        file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
 
         edit_menu = menu_bar.addMenu("Edit")
+        edit_menu.addAction(self.action_delete_current)
+        edit_menu.addAction(self.action_clear_all)
 
         tools_menu = menu_bar.addMenu("Tools")
+        tools_menu.addAction(self.action_toggle_legend)
+        tools_menu.addAction(self.action_debug_summary)
 
         help_menu = menu_bar.addMenu("Help")
         help_menu.addAction(self.action_about)
 
-        edit_menu.setEnabled(True)
-        tools_menu.setEnabled(True)
-
     def _build_ui(self) -> None:
         """
-        Build the central MATLAB-like layout.
+        Build the central layout.
         """
         central = QWidget()
         self.setCentralWidget(central)
 
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
-        splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self._build_top_step_bar())
+
+        vertical_splitter = QSplitter(Qt.Vertical)
+        main_layout.addWidget(vertical_splitter)
+
+        top_splitter = QSplitter(Qt.Horizontal)
 
         self.plot_canvas = MatlabStylePlotCanvas()
         self.plot_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         right_panel = self._build_right_panel()
 
-        splitter.addWidget(self.plot_canvas)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([820, 580])
+        top_splitter.addWidget(self.plot_canvas)
+        top_splitter.addWidget(right_panel)
+        top_splitter.setStretchFactor(0, 1)
+        top_splitter.setStretchFactor(1, 0)
+        top_splitter.setSizes([980, 650])
+
+        self.terminal = TerminalWidget()
+        self._update_terminal_namespace()
+
+        vertical_splitter.addWidget(top_splitter)
+        vertical_splitter.addWidget(self.terminal)
+        vertical_splitter.setStretchFactor(0, 1)
+        vertical_splitter.setStretchFactor(1, 0)
+        vertical_splitter.setSizes([760, 190])
+
+    def _build_top_step_bar(self) -> QWidget:
+        """
+        Build top workflow buttons.
+        """
+        bar = QWidget()
+        bar.setObjectName("TopStepBar")
+
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(12)
+
+        self.structure_step_button = QPushButton("1  Structure RF Design")
+        self.measurement_step_button = QPushButton("2  Measurement Conditions")
+        self.beadpull_step_button = QPushButton("3  Bead-pull Files")
+
+        self.structure_step_button.clicked.connect(self.open_structure_dialog)
+        self.measurement_step_button.clicked.connect(self.open_measurement_dialog)
+        self.beadpull_step_button.clicked.connect(self.add_beadpull_file)
+
+        for button in [
+            self.structure_step_button,
+            self.measurement_step_button,
+            self.beadpull_step_button,
+        ]:
+            button.setObjectName("StepButton")
+            button.setMinimumHeight(38)
+            layout.addWidget(button)
+
+        return bar
 
     def _build_right_panel(self) -> QWidget:
         """
-        Build the right panel with result lists, file list, buttons, and plot options.
+        Build the right panel.
+
+        The top row contains screenshot and file-selection controls.
+        The middle contains the file list.
+        The bottom contains action buttons in two rows.
         """
         panel = QWidget()
-        panel.setMinimumWidth(570)
+        panel.setObjectName("RightPanel")
+        panel.setMinimumWidth(660)
 
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         self.df2tune_list = QListWidget()
         self.ds11_list = QListWidget()
         self.file_list = QListWidget()
 
+        self.file_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.file_list.currentRowChanged.connect(self._set_current_record_from_row)
+        self.file_list.itemChanged.connect(self._file_item_changed)
 
         layout.addWidget(
             self._make_list_column(
@@ -171,24 +259,53 @@ class MainWindow(QMainWindow):
         file_and_options = QWidget()
         file_and_options_layout = QVBoxLayout(file_and_options)
         file_and_options_layout.setContentsMargins(0, 0, 0, 0)
+        file_and_options_layout.setSpacing(8)
 
-        screenshot_row = QHBoxLayout()
-        screenshot_row.addStretch()
+        top_button_row = QHBoxLayout()
+        top_button_row.setSpacing(8)
 
         self.screenshot_button = QPushButton("ScreenShot")
-        self.screenshot_button.clicked.connect(self.save_screenshot)
-        screenshot_row.addWidget(self.screenshot_button)
+        self.check_all_button = QPushButton("All")
+        self.check_none_button = QPushButton("None")
+        self.check_current_button = QPushButton("Current")
 
-        file_and_options_layout.addLayout(screenshot_row)
+        self.screenshot_button.clicked.connect(self.save_screenshot)
+        self.check_all_button.clicked.connect(self.check_all_records)
+        self.check_none_button.clicked.connect(self.check_no_records)
+        self.check_current_button.clicked.connect(self.check_current_record_only)
+
+        for button in [
+            self.screenshot_button,
+            self.check_all_button,
+            self.check_none_button,
+            self.check_current_button,
+        ]:
+            button.setMinimumWidth(86)
+            button.setMinimumHeight(32)
+
+        top_button_row.addWidget(self.screenshot_button)
+        top_button_row.addStretch()
+        top_button_row.addWidget(self.check_all_button)
+        top_button_row.addWidget(self.check_none_button)
+        top_button_row.addWidget(self.check_current_button)
+
+        file_and_options_layout.addLayout(top_button_row)
+
+        self.file_list_label = QLabel("Files to plot")
+        self.file_list_label.setObjectName("PanelTitle")
+
+        file_and_options_layout.addWidget(self.file_list_label)
         file_and_options_layout.addWidget(self.file_list)
 
-        button_row = QHBoxLayout()
+        bottom_button_grid = QGridLayout()
+        bottom_button_grid.setHorizontalSpacing(8)
+        bottom_button_grid.setVerticalSpacing(8)
 
         self.add_button = QPushButton("Add")
         self.delete_button = QPushButton("Delete")
         self.export_button = QPushButton("Export")
         self.debug_button = QPushButton("Debug")
-        self.legend_button = QPushButton("Leg")
+        self.legend_button = QPushButton("Legend")
         self.colorbar_button = QPushButton("ColBar")
 
         self.add_button.clicked.connect(self.add_beadpull_file)
@@ -206,9 +323,18 @@ class MainWindow(QMainWindow):
             self.legend_button,
             self.colorbar_button,
         ]:
-            button_row.addWidget(button)
+            button.setMinimumWidth(90)
+            button.setMinimumHeight(32)
 
-        file_and_options_layout.addLayout(button_row)
+        bottom_button_grid.addWidget(self.add_button, 0, 0)
+        bottom_button_grid.addWidget(self.delete_button, 0, 1)
+        bottom_button_grid.addWidget(self.export_button, 0, 2)
+
+        bottom_button_grid.addWidget(self.debug_button, 1, 0)
+        bottom_button_grid.addWidget(self.legend_button, 1, 1)
+        bottom_button_grid.addWidget(self.colorbar_button, 1, 2)
+
+        file_and_options_layout.addLayout(bottom_button_grid)
         file_and_options_layout.addWidget(self._build_plot_options_group())
 
         layout.addWidget(file_and_options)
@@ -222,16 +348,18 @@ class MainWindow(QMainWindow):
         width: int,
     ) -> QWidget:
         """
-        Build a narrow MATLAB-like list column with a title.
+        Build a narrow list column.
         """
         widget = QWidget()
         widget.setFixedWidth(width)
 
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         label = QLabel(title)
         label.setAlignment(Qt.AlignCenter)
+        label.setObjectName("PanelTitle")
 
         list_widget.setMinimumHeight(620)
 
@@ -242,10 +370,12 @@ class MainWindow(QMainWindow):
 
     def _build_plot_options_group(self) -> QGroupBox:
         """
-        Build the MATLAB-like radio-button plot selector.
+        Build the radio-button plot selector.
         """
         group = QGroupBox("Plot...")
         layout = QGridLayout(group)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(4)
 
         self.plot_button_group = QButtonGroup(self)
         self.plot_button_group.setExclusive(True)
@@ -286,6 +416,180 @@ class MainWindow(QMainWindow):
 
         return group
 
+    def _apply_style(self) -> None:
+        """
+        Apply a modern light stylesheet.
+        """
+        self.setStyleSheet(
+            """
+            QMainWindow {
+                background-color: #f5f7fb;
+            }
+
+            QWidget {
+                font-family: "Segoe UI", "Arial";
+                font-size: 10pt;
+                color: #1f2937;
+            }
+
+            QMenuBar {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 4px;
+            }
+
+            QMenuBar::item {
+                background: transparent;
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+
+            QMenuBar::item:selected {
+                background-color: #eef2ff;
+            }
+
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                padding: 6px;
+            }
+
+            QMenu::item {
+                padding: 7px 24px;
+                border-radius: 5px;
+            }
+
+            QMenu::item:selected {
+                background-color: #eef2ff;
+            }
+
+            QWidget#TopStepBar,
+            QWidget#RightPanel {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+            }
+
+            QLabel#PanelTitle {
+                font-weight: 600;
+                color: #374151;
+            }
+
+            QLabel#CoordinateLabel {
+                color: #4b5563;
+                padding: 4px 8px;
+                background-color: #ffffff;
+                border-top: 1px solid #e5e7eb;
+            }
+
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 7px 10px;
+                font-weight: 600;
+            }
+
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+
+            QPushButton:pressed {
+                background-color: #1e40af;
+            }
+
+            QPushButton#StepButton {
+                background-color: #e5e7eb;
+                color: #374151;
+                border: 1px solid #d1d5db;
+                font-weight: 700;
+            }
+
+            QPushButton#StepButton[state="done"] {
+                background-color: #16a34a;
+                color: white;
+                border: 1px solid #15803d;
+            }
+
+            QPushButton#StepButton[state="pending"] {
+                background-color: #e5e7eb;
+                color: #374151;
+                border: 1px solid #d1d5db;
+            }
+
+            QListWidget,
+            QPlainTextEdit,
+            QLineEdit {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 5px;
+                selection-background-color: #dbeafe;
+                selection-color: #111827;
+            }
+
+            QListWidget::item {
+                padding: 4px;
+                border-radius: 5px;
+            }
+
+            QListWidget::item:selected {
+                background-color: #dbeafe;
+                color: #111827;
+            }
+
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding: 10px;
+                font-weight: 700;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: #374151;
+            }
+
+            QRadioButton {
+                spacing: 6px;
+            }
+
+            QStatusBar {
+                background-color: #ffffff;
+                border-top: 1px solid #e5e7eb;
+            }
+
+            QSplitter::handle {
+                background-color: #e5e7eb;
+            }
+
+            QSplitter::handle:hover {
+                background-color: #c7d2fe;
+            }
+            """
+        )
+
+    def _update_step_buttons(self) -> None:
+        """
+        Update top workflow button states.
+        """
+        states = {
+            self.structure_step_button: self.structure_done,
+            self.measurement_step_button: self.measurement_done,
+            self.beadpull_step_button: self.beadpull_done,
+        }
+
+        for button, done in states.items():
+            button.setProperty("state", "done" if done else "pending")
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
     def open_structure_dialog(self) -> None:
         """
         Open the RF structure loader dialog.
@@ -300,7 +604,12 @@ class MainWindow(QMainWindow):
             return
 
         self.RF_params = dialog.rf_structure
+        self.structure_done = True
+
+        self._update_step_buttons()
+        self._update_terminal_namespace()
         self.statusBar().showMessage("RF structure loaded")
+        self.terminal.write("RF structure loaded.")
 
     def open_measurement_dialog(self) -> None:
         """
@@ -310,11 +619,22 @@ class MainWindow(QMainWindow):
 
         if dialog.exec():
             self.Meas_params = dialog.get_config()
+            self.measurement_done = True
+
+            for record in self.records:
+                record.Meas_params = self.Meas_params
+
+            self._update_step_buttons()
+            self._update_terminal_namespace()
             self.statusBar().showMessage("Measurement configuration updated")
+            self.terminal.write("Measurement configuration updated.")
 
     def add_beadpull_file(self) -> None:
         """
-        Add one or more bead-pull files and analyze them immediately.
+        Add bead-pull files using the bead-pull file dialog.
+
+        The dialog is opened repeatedly, allowing each file to have its own
+        frequency, temperature, direction flags, and bead-pull options.
         """
         if self.RF_params is None:
             QMessageBox.warning(
@@ -324,43 +644,95 @@ class MainWindow(QMainWindow):
             )
             return
 
-        filenames, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Load bead-pull files",
-            "",
-            "CSV files (*.csv);;All files (*)",
-        )
+        added_any = False
 
-        if not filenames:
+        while True:
+            dialog = BeadpullFileDialog(
+                default_options=self.BP_options,
+                parent=self,
+            )
+
+            if not dialog.exec():
+                break
+
+            self._analyze_and_add_file_from_dialog(dialog)
+            added_any = True
+
+            answer = QMessageBox.question(
+                self,
+                "Add another bead-pull file",
+                "Do you want to add another bead-pull file?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+
+            if answer != QMessageBox.Yes:
+                break
+
+        if not added_any:
             return
-
-        for filename in filenames:
-            self._analyze_and_add_file(filename)
 
         if self.records:
             self.file_list.setCurrentRow(len(self.records) - 1)
 
+        self.beadpull_done = len(self.records) > 0
+
+        self._update_step_buttons()
         self.update_all_views()
+        self._update_terminal_namespace()
         self.statusBar().showMessage("Bead-pull file analysis completed")
 
-    def _analyze_and_add_file(self, filename: str) -> None:
+    def _analyze_and_add_file_from_dialog(self, dialog: BeadpullFileDialog) -> None:
         """
-        Analyze one bead-pull file and append it to the record list.
+        Analyze one bead-pull file using values from the bead-pull file dialog.
         """
+        if self.RF_params is None:
+            raise RuntimeError("RF structure must be loaded before analysis.")
+
+        if dialog.filename is None:
+            raise RuntimeError("No bead-pull filename was selected.")
+
+        RF_params = deepcopy(self.RF_params)
+
+        if hasattr(RF_params, "option_inverse"):
+            RF_params.option_inverse = dialog.invert_measurement_direction
+
+        if dialog.invert_rf_structure_parameters:
+            self.terminal.write(
+                "invert RF structure parameters selected. "
+                "Connect this to the RF-structure inversion logic if needed."
+            )
+
+        self.BP_options = deepcopy(dialog.options)
+
         bdata = BeadpullRecord(
-            RF_params=self.RF_params,
+            RF_params=RF_params,
             Meas_params=self.Meas_params,
-            BP_options=self.BP_options,
-            filename=filename,
+            BP_options=deepcopy(dialog.options),
+            filename=dialog.filename,
+            #f0_MHz_override=dialog.f0_MHz_override,
+            #temperature_degC_override=dialog.temperature_degC_override,
         )
 
         self.analyzer.evaluate(bdata)
 
         self.records.append(bdata)
 
-        item_text = f"{len(self.records):02d}: \"{filename}\""
-        item = QListWidgetItem(item_text)
+        filename = Path(dialog.filename).name
+
+        item = QListWidgetItem(filename)
+        item.setData(Qt.UserRole, len(self.records) - 1)
+        item.setFlags(
+            item.flags()
+            | Qt.ItemIsUserCheckable
+            | Qt.ItemIsSelectable
+            | Qt.ItemIsEnabled
+        )
+        item.setCheckState(Qt.Checked)
+
         self.file_list.addItem(item)
+
+        self.terminal.write(f"Loaded and analyzed: {filename}")
 
     def delete_selected_record(self) -> None:
         """
@@ -371,21 +743,118 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.records):
             return
 
+        deleted = self.records[row]
+
         self.records.pop(row)
         self.file_list.takeItem(row)
-
-        for idx in range(self.file_list.count()):
-            record = self.records[idx]
-            self.file_list.item(idx).setText(
-                f"{idx + 1:02d}: \"{record.filename}\""
-            )
+        self._refresh_file_items()
 
         if self.records:
             self.file_list.setCurrentRow(min(row, len(self.records) - 1))
         else:
             self.current_record_index = None
 
+        self.beadpull_done = len(self.records) > 0
+
+        self._update_step_buttons()
         self.update_all_views()
+        self._update_terminal_namespace()
+
+        if deleted.filename is not None:
+            self.terminal.write(f"Deleted: {Path(deleted.filename).name}")
+
+    def clear_all_records(self) -> None:
+        """
+        Clear all loaded bead-pull records.
+        """
+        self.records.clear()
+        self.current_record_index = None
+        self.beadpull_done = False
+
+        self.file_list.clear()
+        self.df2tune_list.clear()
+        self.ds11_list.clear()
+        self.plot_canvas.clear_plot()
+
+        self._update_step_buttons()
+        self._update_terminal_namespace()
+        self.terminal.write("Cleared all bead-pull records.")
+        self.statusBar().showMessage("All records cleared")
+
+    def _refresh_file_items(self) -> None:
+        """
+        Refresh file-list item labels and stored indices.
+        """
+        self.file_list.blockSignals(True)
+
+        checked_filenames = set()
+
+        for idx in range(self.file_list.count()):
+            item = self.file_list.item(idx)
+
+            if item.checkState() == Qt.Checked:
+                checked_filenames.add(item.text())
+
+        self.file_list.clear()
+
+        for idx, record in enumerate(self.records):
+            filename = Path(record.filename).name if record.filename else f"record {idx + 1}"
+            item = QListWidgetItem(filename)
+            item.setData(Qt.UserRole, idx)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemIsUserCheckable
+                | Qt.ItemIsSelectable
+                | Qt.ItemIsEnabled
+            )
+
+            if filename in checked_filenames:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+
+            self.file_list.addItem(item)
+
+        self.file_list.blockSignals(False)
+
+    def check_all_records(self) -> None:
+        """
+        Check all loaded records for plotting.
+        """
+        self.file_list.blockSignals(True)
+
+        for idx in range(self.file_list.count()):
+            self.file_list.item(idx).setCheckState(Qt.Checked)
+
+        self.file_list.blockSignals(False)
+        self.update_plot()
+
+    def check_no_records(self) -> None:
+        """
+        Uncheck all loaded records.
+        """
+        self.file_list.blockSignals(True)
+
+        for idx in range(self.file_list.count()):
+            self.file_list.item(idx).setCheckState(Qt.Unchecked)
+
+        self.file_list.blockSignals(False)
+        self.update_plot()
+
+    def check_current_record_only(self) -> None:
+        """
+        Check only the currently selected record.
+        """
+        current_row = self.file_list.currentRow()
+
+        self.file_list.blockSignals(True)
+
+        for idx in range(self.file_list.count()):
+            state = Qt.Checked if idx == current_row else Qt.Unchecked
+            self.file_list.item(idx).setCheckState(state)
+
+        self.file_list.blockSignals(False)
+        self.update_plot()
 
     def export_current_tuning_table(self) -> None:
         """
@@ -408,7 +877,9 @@ class MainWindow(QMainWindow):
             return
 
         bdata.tuning_dataframe().to_csv(filename, index=False)
+
         self.statusBar().showMessage(f"Exported {filename}")
+        self.terminal.write(f"Exported tuning table: {filename}")
 
     def show_debug_summary(self) -> None:
         """
@@ -424,6 +895,7 @@ class MainWindow(QMainWindow):
         text = "\n".join(f"{key}: {value}" for key, value in summary.items())
 
         QMessageBox.information(self, "Debug summary", text)
+        self.terminal.write(text)
 
     def toggle_legend(self) -> None:
         """
@@ -432,6 +904,11 @@ class MainWindow(QMainWindow):
         self.legend_visible = not self.legend_visible
         self.plot_canvas.set_legend_visible(self.legend_visible)
         self.update_plot()
+
+        if self.legend_visible:
+            self.terminal.write("Legend enabled.")
+        else:
+            self.terminal.write("Legend disabled.")
 
     def toggle_colorbar_placeholder(self) -> None:
         """
@@ -459,6 +936,7 @@ class MainWindow(QMainWindow):
 
         self.grab().save(filename)
         self.statusBar().showMessage(f"Screenshot saved to {filename}")
+        self.terminal.write(f"Screenshot saved: {filename}")
 
     def _set_current_record_from_row(self, row: int) -> None:
         """
@@ -470,6 +948,13 @@ class MainWindow(QMainWindow):
             self.current_record_index = row
 
         self.update_result_lists()
+        self._update_terminal_namespace()
+
+    def _file_item_changed(self, item: QListWidgetItem) -> None:
+        """
+        Update the plot when a file checkbox changes.
+        """
+        self.update_plot()
 
     @property
     def current_record(self) -> BeadpullRecord | None:
@@ -484,9 +969,27 @@ class MainWindow(QMainWindow):
 
         return self.records[self.current_record_index]
 
+    @property
+    def plotted_records(self) -> list[BeadpullRecord]:
+        """
+        Return records whose file-list items are checked.
+        """
+        selected_records = []
+
+        for row in range(self.file_list.count()):
+            item = self.file_list.item(row)
+
+            if item.checkState() == Qt.Checked:
+                idx = item.data(Qt.UserRole)
+
+                if idx is not None and 0 <= idx < len(self.records):
+                    selected_records.append(self.records[idx])
+
+        return selected_records
+
     def update_all_views(self) -> None:
         """
-        Update plot and right-side lists.
+        Update plot and numerical lists.
         """
         self.update_result_lists()
         self.update_plot()
@@ -513,9 +1016,9 @@ class MainWindow(QMainWindow):
 
     def update_plot(self) -> None:
         """
-        Update the main plot using all loaded records.
+        Update the main plot using checked records.
         """
-        self.plot_canvas.plot_records(self.records, self.current_plot_key)
+        self.plot_canvas.plot_records(self.plotted_records, self.current_plot_key)
 
     def _plot_radio_changed(self, checked: bool) -> None:
         """
@@ -531,6 +1034,25 @@ class MainWindow(QMainWindow):
 
         self.current_plot_key = button.property("plot_key")
         self.update_plot()
+
+    def _update_terminal_namespace(self) -> None:
+        """
+        Update the embedded terminal namespace with the current GUI state.
+        """
+        if not hasattr(self, "terminal"):
+            return
+
+        self.terminal.update_namespace(
+            window=self,
+            records=self.records,
+            bdata=self.current_record,
+            plotted_records=self.plotted_records,
+            RF_params=self.RF_params,
+            Meas_params=self.Meas_params,
+            BP_options=self.BP_options,
+            analyzer=self.analyzer,
+            np=np,
+        )
 
     def show_about(self) -> None:
         """
