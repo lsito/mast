@@ -37,7 +37,7 @@ from src.gui.meas_config_dialog import MeasurementConfigDialog
 from src.gui.plot_canvas import MatlabStylePlotCanvas
 from src.gui.structure_config_dialog import RFStructureLoaderDialog
 from src.gui.terminal_widget import TerminalWidget
-
+from src.gui.tuning_simulator_window import TuningSimulatorWindow
 
 class MainWindow(QMainWindow):
     """
@@ -115,6 +115,9 @@ class MainWindow(QMainWindow):
         self.action_debug_summary = QAction("Debug Summary", self)
         self.action_debug_summary.triggered.connect(self.show_debug_summary)
 
+        self.action_tuning_simulator = QAction("Tuning Simulator...", self)
+        self.action_tuning_simulator.triggered.connect(self.open_tuning_simulator)
+
         self.action_exit = QAction("Exit", self)
         self.action_exit.triggered.connect(self.close)
 
@@ -142,6 +145,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_clear_all)
 
         tools_menu = menu_bar.addMenu("Tools")
+        tools_menu.addAction(self.action_tuning_simulator)
+        tools_menu.addSeparator()
         tools_menu.addAction(self.action_toggle_legend)
         tools_menu.addAction(self.action_debug_summary)
 
@@ -631,9 +636,11 @@ class MainWindow(QMainWindow):
 
     def add_beadpull_file(self) -> None:
         """
-        Add one or more bead-pull files and analyze them immediately.
+        Add one or more bead-pull files with per-load analysis options.
 
-        The file dialog allows multiple selection using Ctrl/Shift selection.
+        The dialog supports multi-selection. Frequency and temperature fields
+        are optional overrides; when they are empty, each file uses the values
+        parsed from its own filename.
         """
         if self.RF_params is None:
             QMessageBox.warning(
@@ -643,22 +650,33 @@ class MainWindow(QMainWindow):
             )
             return
 
-        filenames, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Load bead-pull files",
-            "",
-            "CSV files (*.csv);;All files (*)",
+        dialog = BeadpullFileDialog(
+            default_options=self.BP_options,
+            default_rf_inverse=bool(getattr(self.RF_params, "option_inverse", False)),
+            parent=self,
         )
 
-        if not filenames:
+        if not dialog.exec():
             return
+
+        if len(dialog.filenames) == 0:
+            return
+
+        self.BP_options = deepcopy(dialog.options)
 
         added_count = 0
         failed_files = []
 
-        for filename in filenames:
+        for filename in dialog.filenames:
             try:
-                self._analyze_and_add_file(filename)
+                self._analyze_and_add_file(
+                    filename=filename,
+                    BP_options=dialog.options,
+                    f0_MHz_override=dialog.f0_MHz_override,
+                    temperature_degC_override=dialog.temperature_degC_override,
+                    invert_rf_structure_parameters=dialog.invert_rf_structure_parameters,
+                    invert_measurement_direction=dialog.invert_measurement_direction,
+                )
                 added_count += 1
             except Exception as exc:
                 failed_files.append((filename, exc))
@@ -669,12 +687,9 @@ class MainWindow(QMainWindow):
         if self.records:
             self.file_list.setCurrentRow(len(self.records) - 1)
 
-        if hasattr(self, "beadpull_done"):
-            self.beadpull_done = len(self.records) > 0
+        self.beadpull_done = len(self.records) > 0
 
-        if hasattr(self, "_update_step_buttons"):
-            self._update_step_buttons()
-
+        self._update_step_buttons()
         self.update_all_views()
         self._update_terminal_namespace()
 
@@ -698,8 +713,15 @@ class MainWindow(QMainWindow):
                     f"{added_count} bead-pull file(s) loaded and analyzed."
                 )
 
-
-    def _analyze_and_add_file(self, filename: str) -> None:
+    def _analyze_and_add_file(
+        self,
+        filename: str,
+        BP_options: BeadpullConfig | None = None,
+        f0_MHz_override: float | None = None,
+        temperature_degC_override: float | None = None,
+        invert_rf_structure_parameters: bool | None = None,
+        invert_measurement_direction: bool = False,
+    ) -> None:
         """
         Analyze one bead-pull file and append it to the record list.
 
@@ -709,11 +731,26 @@ class MainWindow(QMainWindow):
         if self.RF_params is None:
             raise RuntimeError("RF structure must be loaded before analysis.")
 
+        record_rf_params = deepcopy(self.RF_params)
+
+        if invert_rf_structure_parameters is not None:
+            record_rf_params.option_inverse = bool(invert_rf_structure_parameters)
+
+        record_options = deepcopy(BP_options) if BP_options is not None else deepcopy(self.BP_options)
+
+        f0_override = None
+
+        if f0_MHz_override is not None:
+            f0_override = float(f0_MHz_override) * 1e6
+
         bdata = BeadpullRecord(
-            RF_params=self.RF_params,
+            RF_params=record_rf_params,
             Meas_params=self.Meas_params,
-            BP_options=self.BP_options,
+            BP_options=record_options,
             filename=filename,
+            f0_override=f0_override,
+            temperature_degC_override=temperature_degC_override,
+            invert_measurement_direction=invert_measurement_direction,
         )
 
         self.analyzer.evaluate(bdata)
@@ -884,6 +921,36 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(f"Exported {filename}")
         self.terminal.write(f"Exported tuning table: {filename}")
+
+    def open_tuning_simulator(self) -> None:
+        """
+        Open the tuning simulator for the currently selected bead-pull record.
+        """
+        bdata = self.current_record
+
+        if bdata is None:
+            QMessageBox.warning(
+                self,
+                "Tuning Simulator",
+                "Select one analyzed bead-pull file first.",
+            )
+            return
+
+        try:
+            self.tuning_simulator_window = TuningSimulatorWindow(
+                bdata=bdata,
+                limits_mU=100.0,
+                dS11_start=None,
+                sliders_for_these_cells=None,
+                parent=self,
+            )
+            self.tuning_simulator_window.show()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Tuning Simulator",
+                str(exc),
+            )
 
     def show_debug_summary(self) -> None:
         """

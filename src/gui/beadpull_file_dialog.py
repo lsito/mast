@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -24,15 +25,20 @@ from src.data_models.bead_config import BeadpullConfig
 
 class BeadpullFileDialog(QDialog):
     """
-    Dialog for adding one bead-pull file.
+    Dialog for adding one or more bead-pull files.
 
-    The dialog selects the bead-pull CSV file and allows per-file control of
-    frequency, temperature, and bead-pull analysis options.
+    The dialog selects bead-pull CSV files and allows shared control of
+    frequency override, temperature override, measurement direction, RF
+    inversion, and bead-pull analysis options.
+
+    If several files are selected, empty frequency and temperature fields mean
+    that each record will use the values parsed from its own filename.
     """
 
     def __init__(
         self,
         default_options: BeadpullConfig | None = None,
+        default_rf_inverse: bool = False,
         parent=None,
     ) -> None:
         """
@@ -40,19 +46,21 @@ class BeadpullFileDialog(QDialog):
         """
         super().__init__(parent)
 
-        self.setWindowTitle("Add bead-pull file")
+        self.setWindowTitle("Add bead-pull files")
         self.setModal(True)
-        self.resize(520, 430)
+        self.resize(620, 570)
 
+        self.filenames: list[str] = []
         self.filename: str | None = None
         self.options = deepcopy(default_options) if default_options is not None else BeadpullConfig()
 
         self.f0_MHz_override: float | None = None
         self.temperature_degC_override: float | None = None
-        self.invert_rf_structure_parameters = False
+        self.invert_rf_structure_parameters = bool(default_rf_inverse)
         self.invert_measurement_direction = False
 
         self._build_ui()
+        self._apply_style()
         self._load_options_to_fields()
 
     def _build_ui(self) -> None:
@@ -61,38 +69,74 @@ class BeadpullFileDialog(QDialog):
         """
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 18, 18, 18)
-        main_layout.setSpacing(12)
+        main_layout.setSpacing(14)
 
-        top_row = QHBoxLayout()
-        top_row.addStretch()
-
-        self.ok_button = QPushButton("OK")
-        self.preview_button = QPushButton("Preview")
-        self.cancel_button = QPushButton("Cancel")
-
-        self.ok_button.clicked.connect(self.on_ok)
-        self.preview_button.clicked.connect(self.on_preview)
-        self.cancel_button.clicked.connect(self.reject)
-
-        top_row.addWidget(self.ok_button)
-        top_row.addWidget(self.preview_button)
-        top_row.addWidget(self.cancel_button)
-
-        main_layout.addLayout(top_row)
+        main_layout.addLayout(self._build_file_selection_section())
+        main_layout.addWidget(self._build_beadpull_options_section())
+        main_layout.addWidget(self._build_override_parameters_section())
         main_layout.addStretch()
+        main_layout.addLayout(self._build_bottom_button_row())
+
+    def _apply_style(self) -> None:
+        """
+        Apply section-card styling for the dialog.
+        """
+        self.setStyleSheet(
+            self.styleSheet()
+            + """
+            QFrame#BeadpullDialogSection {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+            }
+
+            QLabel#BeadpullDialogSectionTitle {
+                font-weight: 700;
+                font-size: 11pt;
+                color: #374151;
+                padding: 0px;
+                margin: 0px;
+            }
+            """
+        )
+
+    def _make_section_frame(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        """
+        Create a white section frame with the title fully inside the rectangle.
+        """
+        frame = QFrame()
+        frame.setObjectName("BeadpullDialogSection")
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("BeadpullDialogSectionTitle")
+        title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        layout.addWidget(title_label)
+
+        return frame, layout
+
+    def _build_file_selection_section(self) -> QVBoxLayout:
+        """
+        Build the file-selection section.
+        """
+        section_layout = QVBoxLayout()
+        section_layout.setSpacing(10)
 
         file_row = QHBoxLayout()
 
         self.filename_edit = QLineEdit()
         self.filename_edit.setReadOnly(True)
+        self.filename_edit.setPlaceholderText("Select one or more bead-pull CSV files")
 
         self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_file)
+        self.browse_button.clicked.connect(self.browse_files)
 
         file_row.addWidget(self.filename_edit)
         file_row.addWidget(self.browse_button)
-
-        main_layout.addLayout(file_row)
 
         vna_row = QHBoxLayout()
         vna_row.addStretch()
@@ -101,26 +145,74 @@ class BeadpullFileDialog(QDialog):
         self.read_vna_button.clicked.connect(self.read_from_vna_placeholder)
 
         vna_row.addWidget(self.read_vna_button)
-        main_layout.addLayout(vna_row)
+        vna_row.addStretch()
 
-        option_row_1 = QHBoxLayout()
+        section_layout.addLayout(file_row)
+        section_layout.addLayout(vna_row)
+
+        return section_layout
+
+    def _build_beadpull_options_section(self) -> QFrame:
+        """
+        Build the bead-pull analysis options section.
+        """
+        frame, layout = self._make_section_frame("Beadpull Options")
+
+        checkbox_column = QVBoxLayout()
+        checkbox_column.setSpacing(8)
+        checkbox_column.setAlignment(Qt.AlignHCenter)
 
         self.use_output_checkbox = QCheckBox("use output S-parameters")
         self.invert_rf_checkbox = QCheckBox("invert RF structure parameters")
-
-        option_row_1.addWidget(self.use_output_checkbox)
-        option_row_1.addWidget(self.invert_rf_checkbox)
-
-        main_layout.addLayout(option_row_1)
-
-        option_row_2 = QHBoxLayout()
-
         self.invert_measurement_checkbox = QCheckBox("invert measurement direction")
 
-        option_row_2.addStretch()
-        option_row_2.addWidget(self.invert_measurement_checkbox)
+        self.use_output_checkbox.setMinimumWidth(260)
+        self.invert_rf_checkbox.setMinimumWidth(260)
+        self.invert_measurement_checkbox.setMinimumWidth(260)
 
-        main_layout.addLayout(option_row_2)
+        checkbox_column.addWidget(self.use_output_checkbox, alignment=Qt.AlignHCenter)
+        checkbox_column.addWidget(self.invert_rf_checkbox, alignment=Qt.AlignHCenter)
+        checkbox_column.addWidget(self.invert_measurement_checkbox, alignment=Qt.AlignHCenter)
+
+        options_grid = QGridLayout()
+        options_grid.setHorizontalSpacing(14)
+        options_grid.setVerticalSpacing(10)
+
+        self.n_zero_edit = QLineEdit()
+        self.threshold_fraction_edit = QLineEdit()
+        self.smooth_size_edit = QLineEdit()
+        self.phase_tolerance_deg_edit = QLineEdit()
+        self.remove_peaks_edit = QLineEdit()
+
+        options_grid.addWidget(QLabel("n_zero"), 0, 0)
+        options_grid.addWidget(self.n_zero_edit, 0, 1)
+
+        options_grid.addWidget(QLabel("Threshold fraction"), 1, 0)
+        options_grid.addWidget(self.threshold_fraction_edit, 1, 1)
+
+        options_grid.addWidget(QLabel("Smooth size"), 2, 0)
+        options_grid.addWidget(self.smooth_size_edit, 2, 1)
+
+        options_grid.addWidget(QLabel("Phase tolerance [deg]"), 3, 0)
+        options_grid.addWidget(self.phase_tolerance_deg_edit, 3, 1)
+
+        options_grid.addWidget(QLabel("Remove peaks"), 4, 0)
+        options_grid.addWidget(self.remove_peaks_edit, 4, 1)
+
+        options_grid.setColumnStretch(0, 0)
+        options_grid.setColumnStretch(1, 1)
+
+        layout.addLayout(checkbox_column)
+        layout.addSpacing(4)
+        layout.addLayout(options_grid)
+
+        return frame
+
+    def _build_override_parameters_section(self) -> QFrame:
+        """
+        Build the optional override-parameter section.
+        """
+        frame, layout = self._make_section_frame("Override Parameters")
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -131,11 +223,8 @@ class BeadpullFileDialog(QDialog):
         self.temperature_edit = QLineEdit()
         self.frequency_edit = QLineEdit()
 
-        self.n_zero_edit = QLineEdit()
-        self.threshold_fraction_edit = QLineEdit()
-        self.smooth_size_edit = QLineEdit()
-        self.phase_tolerance_deg_edit = QLineEdit()
-        self.remove_peaks_edit = QLineEdit()
+        self.temperature_edit.setPlaceholderText("from filename")
+        self.frequency_edit.setPlaceholderText("from filename")
 
         grid.addWidget(QLabel("Atmosphere"), 0, 0)
         grid.addWidget(self.atmosphere_edit, 0, 1)
@@ -149,22 +238,40 @@ class BeadpullFileDialog(QDialog):
         grid.addWidget(QLabel("Frequency [MHz]"), 3, 0)
         grid.addWidget(self.frequency_edit, 3, 1)
 
-        grid.addWidget(QLabel("n_zero"), 4, 0)
-        grid.addWidget(self.n_zero_edit, 4, 1)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
 
-        grid.addWidget(QLabel("Threshold fraction"), 5, 0)
-        grid.addWidget(self.threshold_fraction_edit, 5, 1)
+        layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Smooth size"), 6, 0)
-        grid.addWidget(self.smooth_size_edit, 6, 1)
+        return frame
 
-        grid.addWidget(QLabel("Phase tolerance [deg]"), 7, 0)
-        grid.addWidget(self.phase_tolerance_deg_edit, 7, 1)
+    def _build_bottom_button_row(self) -> QHBoxLayout:
+        """
+        Build the centered bottom button row.
+        """
+        button_row = QHBoxLayout()
+        button_row.addStretch()
 
-        grid.addWidget(QLabel("Remove peaks"), 8, 0)
-        grid.addWidget(self.remove_peaks_edit, 8, 1)
+        self.ok_button = QPushButton("OK")
+        self.preview_button = QPushButton("Preview")
+        self.cancel_button = QPushButton("Cancel")
 
-        main_layout.addLayout(grid)
+        self.ok_button.setMinimumWidth(92)
+        self.preview_button.setMinimumWidth(92)
+        self.cancel_button.setMinimumWidth(92)
+
+        self.ok_button.clicked.connect(self.on_ok)
+        self.preview_button.clicked.connect(self.on_preview)
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_row.addWidget(self.ok_button)
+        button_row.addSpacing(10)
+        button_row.addWidget(self.preview_button)
+        button_row.addSpacing(10)
+        button_row.addWidget(self.cancel_button)
+        button_row.addStretch()
+
+        return button_row
 
     def _load_options_to_fields(self) -> None:
         """
@@ -173,6 +280,9 @@ class BeadpullFileDialog(QDialog):
         self.use_output_checkbox.setChecked(
             bool(getattr(self.options, "use_S_output_for_BP", False))
         )
+
+        self.invert_rf_checkbox.setChecked(bool(self.invert_rf_structure_parameters))
+        self.invert_measurement_checkbox.setChecked(bool(self.invert_measurement_direction))
 
         self.n_zero_edit.setText(str(getattr(self.options, "n_zero", 30)))
         self.threshold_fraction_edit.setText(
@@ -186,23 +296,57 @@ class BeadpullFileDialog(QDialog):
         remove_peaks = getattr(self.options, "remove_peaks", [])
         self.remove_peaks_edit.setText(",".join(str(v) for v in remove_peaks))
 
-    def browse_file(self) -> None:
+    def browse_files(self) -> None:
         """
-        Select a bead-pull CSV file.
+        Select one or more bead-pull CSV files.
         """
-        filename, _ = QFileDialog.getOpenFileName(
+        filenames, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select bead-pull CSV",
+            "Select bead-pull CSV files",
             "",
             "CSV files (*.csv);;All files (*)",
         )
 
-        if not filename:
+        if not filenames:
             return
 
-        self.filename = filename
-        self.filename_edit.setText(filename)
-        self._try_fill_frequency_and_temperature_from_filename(filename)
+        self.filenames = list(filenames)
+        self.filename = self.filenames[0]
+        self._update_filename_display()
+        self._try_fill_frequency_and_temperature_from_selection()
+
+    def browse_file(self) -> None:
+        """
+        Backward-compatible alias for selecting bead-pull files.
+        """
+        self.browse_files()
+
+    def _update_filename_display(self) -> None:
+        """
+        Show the selected filename or a compact multiple-file summary.
+        """
+        if len(self.filenames) == 0:
+            self.filename_edit.clear()
+            return
+
+        if len(self.filenames) == 1:
+            self.filename_edit.setText(self.filenames[0])
+            return
+
+        first_name = Path(self.filenames[0]).name
+        self.filename_edit.setText(f"{len(self.filenames)} files selected, first: {first_name}")
+        self.filename_edit.setToolTip("\n".join(self.filenames))
+
+    def _try_fill_frequency_and_temperature_from_selection(self) -> None:
+        """
+        Fill frequency and temperature only when exactly one file is selected.
+        """
+        if len(self.filenames) != 1:
+            self.frequency_edit.clear()
+            self.temperature_edit.clear()
+            return
+
+        self._try_fill_frequency_and_temperature_from_filename(self.filenames[0])
 
     def _try_fill_frequency_and_temperature_from_filename(self, filename: str) -> None:
         """
@@ -284,7 +428,10 @@ class BeadpullFileDialog(QDialog):
             if not item:
                 continue
 
-            values.append(int(item))
+            try:
+                values.append(int(item))
+            except ValueError as exc:
+                raise ValueError(f"Invalid peak index in Remove peaks: {item!r}") from exc
 
         return values
 
@@ -326,8 +473,8 @@ class BeadpullFileDialog(QDialog):
         Validate and accept the dialog.
         """
         try:
-            if self.filename is None:
-                raise ValueError("Select a bead-pull CSV file first.")
+            if len(self.filenames) == 0:
+                raise ValueError("Select at least one bead-pull CSV file first.")
 
             self._update_options_from_fields()
 

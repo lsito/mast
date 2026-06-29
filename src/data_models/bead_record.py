@@ -13,6 +13,7 @@ from src.data_models.bead_config import BeadpullConfig
 from src.data_models.meas_config import MeasurementConfig
 from src.data_models.rf_structure import RFStructureParams
 
+
 @dataclass(slots=True)
 class BeadpullRecord:
     """
@@ -24,15 +25,16 @@ class BeadpullRecord:
     in `BeadPullAnalyzer`.
     """
 
-    # Quantities I need from configuration for computations
     RF_params: RFStructureParams
     Meas_params: MeasurementConfig
     BP_options: BeadpullConfig
 
-    # Filename of the BP measurement in the format BP_xxxx.xx_yy.ydeg.csv
     filename: Optional[str] = None
 
-    # Parsing the 
+    f0_override: Optional[float] = None
+    temperature_degC_override: Optional[float] = None
+    invert_measurement_direction: bool = False
+
     @property
     def BP_filename_data(self) -> dict[str, float]:
         """
@@ -45,7 +47,6 @@ class BeadpullRecord:
         """
         if self.filename is None:
             raise ValueError("Cannot parse bead-pull data because filename is None.")
-
 
         pattern = (
             r"BP_"
@@ -71,22 +72,40 @@ class BeadpullRecord:
             "f0": f0_MHz * 1e6,
             "temperature_degC": temperature_degC,
         }
-    
+
     @property
     def f0(self) -> float:
         """
-        Return the bead-pull frequency parsed from the filename in Hz.
+        Return the bead-pull frequency in Hz.
+
+        If a per-file override was provided by the bead-pull file dialog, use it.
+        Otherwise parse the value from the filename.
         """
+        if self.f0_override is not None:
+            return float(self.f0_override)
+
         return self.BP_filename_data["f0"]
+
+    @property
+    def f0_MHz(self) -> float:
+        """
+        Return the bead-pull frequency in MHz.
+        """
+        return self.f0 / 1e6
 
     @property
     def temperature_degC(self) -> float:
         """
-        Return the bead-pull measurement temperature parsed from the filename.
+        Return the bead-pull measurement temperature.
+
+        If a per-file override was provided by the bead-pull file dialog, use it.
+        Otherwise parse the value from the filename.
         """
+        if self.temperature_degC_override is not None:
+            return float(self.temperature_degC_override)
+
         return self.BP_filename_data["temperature_degC"]
 
-    # Maybe I should update the temperature of the measurement in the Meas_params
     @property
     def f1(self) -> float:
         """
@@ -97,24 +116,14 @@ class BeadpullRecord:
     @property
     def DeltaF(self) -> float:
         """
-        Return the normalized frequency detuning. ([1], Eq. (3))
+        Return the normalized frequency detuning.
         """
         return -2 * (self.f1 - self.f0) / self.f0
-
-    # Group velocity interpolation
-    # This is a list of group velocities for each cell, given in the json config
-    # file, apparently at the beginning of the cell (0, 1, 2, ..., noc-1).
-    # We need vg at the middle of the cell (0.5, 1.5, ..., noc-0.5) for the 
-    # calculation of Qe and beta, so we need to interpolate with a cubic spline
-    # 0.5   1   1.5   2   2.5   3   ...
-    #  |    *    |    *    |    *
-    #      vg1       vg2       vg3 
 
     @property
     def vg(self) -> np.ndarray:
         """
-        Return the group velocity array from `RF_params` given in the JSON
-        structure configuration file. Notice, this is interpolated once.
+        Return the group velocity array from `RF_params`.
         """
         return np.asarray(self.RF_params.vg_, dtype=float)
 
@@ -139,7 +148,7 @@ class BeadpullRecord:
     @property
     def vg_(self) -> np.ndarray:
         """
-        Return the group velocity interpolated for a second time. Needed for Qe.
+        Return the group velocity interpolated for Qe.
         """
         spline = CubicSpline(
             self.x,
@@ -151,8 +160,6 @@ class BeadpullRecord:
 
         return spline(self.x_interp)
 
-    # External Q approximated from [1], Eq. (5)
-    # This is the phase advance (NOT per cell), given in the json config file
     @property
     def phi0(self) -> float:
         """
@@ -167,23 +174,10 @@ class BeadpullRecord:
         """
         return np.asarray(self.RF_params.Q0_, dtype=float)
 
-    # Coupling coefficient beta of each cell from Wangler Chapt.5.5
-    # Qe:      Qe1      Qe2      Qe3      Qe4      Qe5
-    #           |        |        |        |        |
-    # 
-    # beta:   beta1    beta2    beta3    beta4
-    #         uses     uses     uses     uses
-    #         Qe1,Qe2  Qe2,Qe3  Qe3,Qe4  Qe4,Qe5
-    # Notice that here the cell is treated as a single input system; hence the power flowing out of the second 
-    # port is accounted for as power lost
-    # Hence Beta(i) = P_ext(1)/(P0(i)+P_ext(i+1)) = 1/Qe(i) / (1/Q0(i) + 1/Qe(i+1))
-
     @property
     def Qe(self) -> np.ndarray:
         """
         Return the approximated external quality factor array.
-        The returned array has length `noc + 1`, because `vg_` is evaluated on the
-        half-cell shifted grid.
         """
         return c0 * self.phi0 / self.vg_
 
@@ -191,7 +185,6 @@ class BeadpullRecord:
     def Qe_i(self) -> np.ndarray:
         """
         Return the left-side external-Q array.
-        It has length `noc`.
         """
         return np.asarray(self.Qe[:-1], dtype=float)
 
@@ -206,8 +199,6 @@ class BeadpullRecord:
     def beta(self) -> np.ndarray:
         """
         Return the coupling coefficient of each cell.
-        Each cell is treated as a single-input system where the power flowing out
-        of the second port is accounted for as power loss.
         """
         return (1 / self.Qe_i) / (1 / self.Q0 + 1 / self.Qe_ip1)
 
@@ -227,8 +218,6 @@ class BeadpullRecord:
     def gamma(self) -> np.ndarray:
         """
         Return the input-port reflection coefficient.
-        It corresponds to the reflection from the input port from [1], Eq. (1), 
-        with the same assumptions used in the notebook.
         """
         return self.gamma_num / self.gamma_den
 
@@ -239,8 +228,7 @@ class BeadpullRecord:
     @property
     def alpha(self) -> np.ndarray:
         """
-        This is [1], Eq. (19) before converting it into a cumulative exponential
-        attenuation factor.
+        Return attenuation coefficient before cumulative attenuation factor.
         """
         return (self.v_particles * self.phi0) / (self.Q0 * self.vg)
 
@@ -248,8 +236,6 @@ class BeadpullRecord:
     def att(self) -> np.ndarray:
         """
         Return the cumulative attenuation factor.
-        The returned array has length `noc + 1`, matching the forward/backward
-        wave arrays `A` and `B`.
         """
         att = np.ones(self.noc + 1)
 
@@ -258,10 +244,6 @@ class BeadpullRecord:
         att[-1] = att[-2] * np.exp(-self.alpha[-1])
 
         return att
-
-    # Import and Computation from BP file will be done in the main using methods
-    # from src/core/beadpull_analyzer.py. The dataclass here acts just as
-    # container
 
     f: Optional[np.ndarray] = None
     scc11: Optional[np.ndarray] = None
@@ -279,15 +261,12 @@ class BeadpullRecord:
 
         return Path(self.filename).suffix.lower()
 
-    ## If the structure was measured with Ports (1, 3) as input, then we take scc11
-    ## If the structure was measured with Ports (2, 4) as input, then we take scc22
     @property
     def use_S_output_for_BP(self) -> bool:
         """
         Return the bead-pull signal-selection option.
         """
         return bool(self.BP_options.use_S_output_for_BP)
-
 
     aorg: Optional[np.ndarray] = None
     sorg: Optional[np.ndarray] = None

@@ -1,16 +1,12 @@
-from pathlib import Path
-from typing import Any, Optional
 import warnings
 
 import numpy as np
-import pandas as pd
-from scipy.constants import c as c0
-from scipy.interpolate import CubicSpline
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import find_peaks
 
 from src.data_models.bead_record import BeadpullRecord
 from src.io_utils.csv import read_csv
+
 
 class BeadPullAnalyzer:
     """
@@ -40,7 +36,6 @@ class BeadPullAnalyzer:
 
         return bdata
 
-    ## Signals are already balanced by src.io_utils.csv read_csv method
     def read_beadpull_file(self, bdata: BeadpullRecord) -> None:
         """
         Read the bead-pull CSV file and store the corrected S-parameter signals.
@@ -61,11 +56,9 @@ class BeadPullAnalyzer:
         bdata.scc12 = scc12
         bdata.scc22 = scc22
 
-    ## If the structure was measured with Ports (1, 3) as input, then we take scc11
-    ## If the structure was measured with Ports (2, 4) as input, then we take scc22
     def select_beadpull_signal(self, bdata: BeadpullRecord) -> None:
         """
-        Generate aorg and sorg, the beadpull files after selection
+        Generate `aorg` and `sorg` after S-parameter selection.
         """
         if bdata.scc11 is None or bdata.scc22 is None:
             raise ValueError("Cannot select bead-pull signal before reading the CSV.")
@@ -77,17 +70,10 @@ class BeadPullAnalyzer:
 
         aorg = np.asarray(aorg, dtype=np.complex128)
 
-        ## Check if the units are not in mU
         if np.max(np.abs(aorg)) > 1:
             aorg = 1e-3 * aorg
 
-        ## Did we select inverse measurement option?
-        # Input  -----------------> Output
-        # Cell 1 Cell 2 ... Cell 33
-
-        # Output -----------------> Input
-        # Cell 33 Cell 32 ... Cell 1
-        if bdata.RF_params.option_inverse:
+        if getattr(bdata, "invert_measurement_direction", False):
             aorg = aorg[::-1]
 
         bdata.aorg = aorg
@@ -110,25 +96,21 @@ class BeadPullAnalyzer:
                 f"at least {2 * n_zero} points."
             )
 
-        # First and last 30 samples
         x_fit = np.concatenate([
-                np.arange(n_zero),
-                np.arange(n - n_zero, n),
-            ])
+            np.arange(n_zero),
+            np.arange(n - n_zero, n),
+        ])
 
         y_fit = np.concatenate([
-                aorg[:n_zero],
-                aorg[-n_zero:],
-            ])
+            aorg[:n_zero],
+            aorg[-n_zero:],
+        ])
 
-        # Global zero-line estimate (needed later)
         a_zero_l = np.mean(aorg[:n_zero])
         gamma0 = a_zero_l
 
         a_zero_lr = np.mean(y_fit) * np.ones_like(aorg)
 
-        # Linear zero-line fit, 
-        # Fit real and imaginary parts separately
         coef_re = np.polyfit(x_fit, y_fit.real, deg=1)
         coef_im = np.polyfit(x_fit, y_fit.imag, deg=1)
 
@@ -136,22 +118,18 @@ class BeadPullAnalyzer:
 
         a_zero = np.polyval(coef_re, x) + 1j * np.polyval(coef_im, x)
 
-        # Baseline-subtracted bead-pull signal
         a = aorg - a_zero
 
-        # Storing in the dataclass
         bdata.a_zero_l = a_zero_l
         bdata.gamma0 = gamma0
         bdata.a_zero_lr = a_zero_lr
         bdata.a_zero = a_zero
         bdata.a = a
 
-        # Just for some checks
         bdata.info["x_fit"] = x_fit
         bdata.info["y_fit"] = y_fit
         bdata.info["coef_re"] = coef_re
         bdata.info["coef_im"] = coef_im
-
 
     def check_zero_line(self, bdata: BeadpullRecord) -> None:
         """
@@ -165,13 +143,10 @@ class BeadPullAnalyzer:
         max_zero_line_deviation = bdata.BP_options.max_zero_line_deviation
 
         zero_region = np.concatenate([
-                a[:n_zero],
-                a[-n_zero:],
-            ])
+            a[:n_zero],
+            a[-n_zero:],
+        ])
 
-        # Robust estimate of bead-pull signal amplitude:
-        # use the 10%-largest value instead of the absolute maximum,
-        # to avoid being dominated by one noisy spike.
         abs_signal_sorted = np.sort(np.abs(a))[::-1]
 
         idx_10_percent = int(np.floor(len(abs_signal_sorted) * 0.1))
@@ -181,7 +156,7 @@ class BeadPullAnalyzer:
             relative_zero_residual = np.full(
                 zero_region.shape,
                 np.inf,
-                dtype=float
+                dtype=float,
             )
 
             relative_zero_sorted = np.sort(np.abs(relative_zero_residual))[::-1]
@@ -219,11 +194,9 @@ class BeadPullAnalyzer:
         if bdata.a is None:
             raise ValueError("Cannot find peaks before `a` has been computed.")
 
-        # Working on a copy of the signal a (so after zero line)
         a = bdata.a
         atp = a.copy()
 
-        # All values below 15% of the signal maximum amplitude are water-levelled
         threshold = bdata.BP_options.threshold_fraction * np.max(np.abs(atp))
         atp[np.abs(atp) < threshold] = 0
 
@@ -233,55 +206,37 @@ class BeadPullAnalyzer:
             mode="nearest",
         )
 
-        # Find peaks and peaks' locations
         locpk, _ = find_peaks(abs_atp_smooth)
         pks = abs_atp_smooth[locpk]
 
-        # Reference complex values at the detected peaks
         dref = a[locpk]
 
-        # Detect double peaks allowing a tollerance of at most 5 deg
         phase_tolerance = bdata.BP_options.phase_tolerance
-
-        # Phase difference between two following peaks computed like:
-        # dref(0)   dref(1)    dref(2)     ...    dref(end-1)    dref(end)
-        #              /          /                                  /
-        #           dref(0)    dref(1)    dref(2)    ...         dref(end-1)    dref(end)    
 
         phase_diff = np.abs(np.angle(dref[1:] / dref[:-1]))
         idx_double = np.where(phase_diff < phase_tolerance)[0]
-
-        # Keep copies before removing double peaks, useful for diagnostics
 
         locpk_raw = locpk.copy()
         dref_raw = dref.copy()
         pks_raw = pks.copy()
 
-        # Remove double peaks
-        #
-        # For each pair of neighboring peaks with almost the same phase,
-        # keep the one with the larger amplitude.
         n_removed = 0
 
         for idx in idx_double:
-            # If I have removed something all the indexes after have to be shifted
             i = idx - n_removed
 
             if i < 0 or i + 1 >= len(dref):
                 continue
 
             if np.abs(dref[i]) >= np.abs(dref[i + 1]):
-                # Keep first peak, remove second
                 locpk = np.delete(locpk, i + 1)
                 dref = np.delete(dref, i + 1)
             else:
-                # Remove first peak, keep second
                 locpk = np.delete(locpk, i)
                 dref = np.delete(dref, i)
 
             n_removed += 1
 
-        """TODO
         if len(bdata.BP_options.remove_peaks) > 0:
             remove_idx = np.asarray(bdata.BP_options.remove_peaks, dtype=int) - 1
             remove_idx = remove_idx[
@@ -292,7 +247,6 @@ class BeadPullAnalyzer:
             for idx in remove_idx:
                 locpk = np.delete(locpk, idx)
                 dref = np.delete(dref, idx)
-        """
 
         pks = abs_atp_smooth[locpk]
 
@@ -387,7 +341,6 @@ class BeadPullAnalyzer:
         phase = np.unwrap(np.angle(a))
         phase_peaks = phase[locpk].copy()
 
-        # Correct phase branch issues
         dphase_peaks = -np.diff(phase_peaks)
 
         Dpp = (dphase_peaks - 2 * phi) / (2 * np.pi)
@@ -397,9 +350,7 @@ class BeadPullAnalyzer:
         if len(ffx) > 0:
             for idx in ffx:
                 phase_shift = np.round(Dpp[idx]) * 2 * np.pi
-                # Correct this phase jump
                 dphase_peaks[idx] = dphase_peaks[idx] - phase_shift
-                # Shfit all following peak phases
                 phase_peaks[idx + 1:] += phase_shift
 
         dphi_c = -np.diff(phase_peaks)
@@ -466,42 +417,19 @@ class BeadPullAnalyzer:
 
         squ = Ebp / np.sqrt(rovq)
 
-        # Determining forward and backward wave (from [1], Eq. 8 to 15)
-
-        # # Field in the structure superposition of forward and backward waves
         I = squ
 
-        A = np.zeros(noc + 1, dtype=np.complex128) # Forward wave
-        B = np.zeros(noc + 1, dtype=np.complex128) # Backward wave
+        A = np.zeros(noc + 1, dtype=np.complex128)
+        B = np.zeros(noc + 1, dtype=np.complex128)
 
-        # input                                           output
-        #   |                                               |
-        #   v                                               v
-
-        #   A[0] -> cell 1 -> A[1] -> cell 2 -> ... -> A[noc]
-        #   B[0] <- cell 1 <- B[1] <- cell 2 <- ... <- B[noc]
-
-        # Implementing Eq. 10
-        # A[1:-1]=             x        x             x
-        # A      =    A[0]    A[1]    A[2] ... ... A[N-2]    A[N-1]
-        # B      =    B[0]    B[1]    B[2] ... ... B[N-2]    B[N-1]
-        # I      =    I[0]    I[1]    I[2] ... ... I[N-2]    I[N-1]
-        # I[:-1] =      x      x        x             x
-        # I[1:]  =             x        x             x        x
-        
         A[1:-1] = (I[:-1] - I[1:] * np.exp(-1j * phi)) / (2j * np.sin(phi))
 
         B[1:-1] = (I[:-1] - I[1:] * np.exp(1j * phi)) / (-2j * np.sin(phi))
 
-        # Output cell
         A[-1] = (A[-2] * (1 - abs(B[-2] / A[-2])) * np.exp(1j * phi[-1]))
         B[-1] = 0
 
-        # Input cell ([1], Eq. 13)
         A[0] = A[1] * np.exp(1j * phi[0])
-        # From Eq. 13 B[0] = A[0]*S11*exp(-2jphi0), with phi0 the phase offset 
-        # of the input waveguide.
-        # This can be computed from Eq. 14: exp(-2jphi0)=-j*|dref[0]|/dref[0]
         B[0] = A[0] * gamma0 * (-1j * np.abs(dref[0])) / dref[0]
 
         bdata.d = float(d)
@@ -518,7 +446,7 @@ class BeadPullAnalyzer:
         if bdata.A is None or bdata.B is None:
             raise ValueError("Cannot compute local reflection before `A` and `B` exist.")
 
-        vg = bdata.vg # Notice this is vg_ including the in and out cells but not the further interpolation done in the calculations
+        vg = bdata.vg
         phi = bdata.phi
         phi0 = bdata.phi0
         fref = bdata.fref
@@ -529,11 +457,8 @@ class BeadPullAnalyzer:
         B = bdata.B
         att = bdata.att
 
-        # Using a mean phase value for filling the array in a first pass 
-        # (it will be overwritten)
         mean_phi_inner = float(np.mean(phi[1:-1]))
 
-        # From [1], Eq. 11
         s11local = (
             B[:-1] - B[1:] * np.exp(-1j * mean_phi_inner)
         ) / A[:-1]
@@ -542,8 +467,6 @@ class BeadPullAnalyzer:
             B[:-1] - B[1:] * np.exp(-1j * mean_phi_inner)
         ) / A[:-1]
 
-        # Now truly Eq. 11 with 2<=n<=N-1; Notice, we are still missing the 
-        # correct values in input and output
         s11local[1:] = (
             B[1:-1] - B[2:] * np.exp(-1j * phi)
         ) / A[1:-1]
@@ -552,14 +475,10 @@ class BeadPullAnalyzer:
             B[1:-1] - B[2:] * np.exp(-1j * phi)
         ) / A[1:-1]
 
-        # Including losses
         ds11global = ds11local * att[:len(ds11local)]
 
-        # Local correction for frequency variation due to temperature (bpparse.m line 273)
-            # Store a copy
         s11local_org = np.array(s11local, copy=True)
 
-        # Compute temperature correction based on frequency shifts
         ds11local_dtemp = (
             1j
             * (f0 - f1)
@@ -569,10 +488,8 @@ class BeadPullAnalyzer:
             / vg
         )
 
-        # Compute again s11 local adding this correction
         s11local = s11local + ds11local_dtemp
 
-        # Global correction for s11
         ds11 = (
             np.imag(ds11global)
             + (f1 - f0)
@@ -583,7 +500,6 @@ class BeadPullAnalyzer:
             * att[:len(ds11local)]
         )
 
-        # Frequency shift to apply to each cell
         df2tune = (
             np.imag(ds11local)
             / (v_particles * phi0 / vg)
