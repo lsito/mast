@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
+    QDialog,
     QAbstractItemView,
     QButtonGroup,
     QGridLayout,
@@ -39,6 +40,8 @@ from src.gui.structure_config_dialog import RFStructureLoaderDialog
 from src.gui.terminal_widget import TerminalWidget
 from src.gui.tuning_simulator_window import TuningSimulatorWindow
 from src.gui.wire_calibration_window import WireCalibrationWindow
+from src.gui.vna_settings_dialog import VNASettingsDialog
+from src.gui.motor_control_window import MotorControlWindow
 
 class MainWindow(QMainWindow):
     """
@@ -80,6 +83,10 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_menu()
         self._build_ui()
+
+        self.vna_ip_address = "128.11.11.11"
+        self.vna_port = 1601
+
         self._apply_style()
         self._update_step_buttons()
 
@@ -122,6 +129,12 @@ class MainWindow(QMainWindow):
         self.action_wire_calibration = QAction("Wire Calibration...", self)
         self.action_wire_calibration.triggered.connect(self.open_wire_calibration)
 
+        self.action_vna_settings = QAction("VNA Settings...", self)
+        self.action_vna_settings.triggered.connect(self.open_vna_settings)
+
+        self.action_motor_control = QAction("Motor Control...", self)
+        self.action_motor_control.triggered.connect(self.open_motor_control)
+
         self.action_exit = QAction("Exit", self)
         self.action_exit.triggered.connect(self.close)
 
@@ -161,6 +174,9 @@ class MainWindow(QMainWindow):
         tools_menu = menu_bar.addMenu("Tools")
         tools_menu.addAction(self.action_tuning_simulator)
         tools_menu.addAction(self.action_wire_calibration)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.action_vna_settings)
+        tools_menu.addAction(self.action_motor_control)
         tools_menu.addSeparator()
         tools_menu.addAction(self.action_toggle_legend)
         tools_menu.addAction(self.action_debug_summary)
@@ -981,6 +997,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Wire Calibration",
+                str(exc),
+            )
+
+    def open_vna_settings(self) -> None:
+        """
+        Open the VNA settings dialog.
+        """
+        dialog = VNASettingsDialog(
+            ip_address=self.vna_ip_address,
+            port=self.vna_port,
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        self.vna_ip_address = dialog.ip_address
+        self.vna_port = dialog.port
+
+    def open_motor_control(self) -> None:
+        """
+        Open the motor control tool.
+        """
+        try:
+            self.motor_control_window = MotorControlWindow(self)
+            self.motor_control_window.show()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Motor Control",
                 str(exc),
             )
 

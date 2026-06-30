@@ -7,6 +7,7 @@ import numpy as np
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.data_models.bead_config import BeadpullConfig
+from src.io_utils.vna_to_csv import read_vna_to_csv
 
 
 class BeadpullFileDialog(QDialog):
@@ -31,8 +33,8 @@ class BeadpullFileDialog(QDialog):
     frequency override, temperature override, measurement direction, RF
     inversion, and bead-pull analysis options.
 
-    If several files are selected, empty frequency and temperature fields mean
-    that each record will use the values parsed from its own filename.
+    The VNA button reads the current VNA traces and saves them as a CSV file,
+    then selects that CSV as the bead-pull file.
     """
 
     def __init__(
@@ -142,7 +144,7 @@ class BeadpullFileDialog(QDialog):
         vna_row.addStretch()
 
         self.read_vna_button = QPushButton("Read from VNA and save csv...")
-        self.read_vna_button.clicked.connect(self.read_from_vna_placeholder)
+        self.read_vna_button.clicked.connect(self.read_from_vna_and_save_csv)
 
         vna_row.addWidget(self.read_vna_button)
         vna_row.addStretch()
@@ -320,6 +322,68 @@ class BeadpullFileDialog(QDialog):
         Backward-compatible alias for selecting bead-pull files.
         """
         self.browse_files()
+
+    def read_from_vna_and_save_csv(self) -> None:
+        """
+        Read the VNA, save a CSV file, and select it as the bead-pull file.
+        """
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save VNA bead-pull CSV",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
+
+        if not filename:
+            return
+
+        if Path(filename).suffix.lower() != ".csv":
+            filename = f"{filename}.csv"
+
+        parent = self.parent()
+        ip_address = getattr(parent, "vna_ip_address", "128.11.11.11")
+        port = getattr(parent, "vna_port", 1601)
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.read_vna_button.setEnabled(False)
+
+        try:
+            goodread = read_vna_to_csv(
+                filename=filename,
+                ip_address=ip_address,
+                port=port,
+            )
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            self.read_vna_button.setEnabled(True)
+            QMessageBox.warning(
+                self,
+                "Read from VNA",
+                f"VNA read failed.\n\n{exc}",
+            )
+            return
+
+        QApplication.restoreOverrideCursor()
+        self.read_vna_button.setEnabled(True)
+
+        if not goodread:
+            QMessageBox.warning(
+                self,
+                "Read from VNA",
+                "The VNA read did not complete successfully.",
+            )
+            return
+
+        self.filenames = [filename]
+        self.filename = filename
+        self._update_filename_display()
+        self._try_fill_frequency_and_temperature_from_selection()
+
+        QMessageBox.information(
+            self,
+            "Read from VNA",
+            f"VNA data saved and selected:\n\n{filename}",
+        )
 
     def _update_filename_display(self) -> None:
         """
@@ -503,14 +567,4 @@ class BeadpullFileDialog(QDialog):
             self,
             "Preview",
             "Preview can be connected to a quick bead-pull plot later.",
-        )
-
-    def read_from_vna_placeholder(self) -> None:
-        """
-        Placeholder for VNA readout.
-        """
-        QMessageBox.information(
-            self,
-            "Read from VNA",
-            "VNA readout can be connected here later.",
         )
