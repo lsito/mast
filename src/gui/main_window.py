@@ -38,6 +38,7 @@ from src.gui.plot_canvas import MatlabStylePlotCanvas
 from src.gui.structure_config_dialog import RFStructureLoaderDialog
 from src.gui.terminal_widget import TerminalWidget
 from src.gui.tuning_simulator_window import TuningSimulatorWindow
+from src.gui.wire_calibration_window import WireCalibrationWindow
 
 class MainWindow(QMainWindow):
     """
@@ -118,11 +119,24 @@ class MainWindow(QMainWindow):
         self.action_tuning_simulator = QAction("Tuning Simulator...", self)
         self.action_tuning_simulator.triggered.connect(self.open_tuning_simulator)
 
+        self.action_wire_calibration = QAction("Wire Calibration...", self)
+        self.action_wire_calibration.triggered.connect(self.open_wire_calibration)
+
         self.action_exit = QAction("Exit", self)
         self.action_exit.triggered.connect(self.close)
 
         self.action_about = QAction("About", self)
         self.action_about.triggered.connect(self.show_about)
+
+        self.action_insert_debug_namespace = QAction("Namespace debug command", self)
+        self.action_insert_debug_namespace.triggered.connect(
+            self.insert_debug_namespace_command
+        )
+
+        self.action_insert_bdata_debug = QAction("bdata debug command", self)
+        self.action_insert_bdata_debug.triggered.connect(
+            self.insert_bdata_debug_command
+        )
 
     def _build_menu(self) -> None:
         """
@@ -146,12 +160,16 @@ class MainWindow(QMainWindow):
 
         tools_menu = menu_bar.addMenu("Tools")
         tools_menu.addAction(self.action_tuning_simulator)
+        tools_menu.addAction(self.action_wire_calibration)
         tools_menu.addSeparator()
         tools_menu.addAction(self.action_toggle_legend)
         tools_menu.addAction(self.action_debug_summary)
 
         help_menu = menu_bar.addMenu("Help")
         help_menu.addAction(self.action_about)
+        help_menu.addSeparator()
+        help_menu.addAction(self.action_insert_debug_namespace)
+        help_menu.addAction(self.action_insert_bdata_debug)
 
     def _build_ui(self) -> None:
         """
@@ -952,6 +970,20 @@ class MainWindow(QMainWindow):
                 str(exc),
             )
 
+    def open_wire_calibration(self) -> None:
+        """
+        Open the wire calibration tool.
+        """
+        try:
+            self.wire_calibration_window = WireCalibrationWindow(self)
+            self.wire_calibration_window.show()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Wire Calibration",
+                str(exc),
+            )
+
     def show_debug_summary(self) -> None:
         """
         Show a compact debug summary for the selected record.
@@ -1134,3 +1166,32 @@ class MainWindow(QMainWindow):
             "About",
             "CLIC Bead-pull Offline Analysis\n\nPython implementation.",
         )
+
+    def insert_debug_namespace_command(self) -> None:
+        """
+        Insert a one-line command that prints the embedded terminal namespace.
+        """
+        command = (
+            'print("\\n".join('
+            'f"{name}: {type(value)}" '
+            'for name, value in globals().items() '
+            'if not name.startswith("__")'
+            '))'
+        )
+
+        self.terminal.insert_command(command)
+
+    def insert_bdata_debug_command(self) -> None:
+        """
+        Insert a one-line command that prints all current bdata dataclass fields.
+        """
+        command = (
+            'from dataclasses import fields; '
+            'print("\\n".join('
+            'f"{field.name}: {type(getattr(bdata, field.name))}, '
+            'shape={getattr(getattr(bdata, field.name), \'shape\', None)}" '
+            'for field in fields(bdata)'
+            '))'
+        )
+
+        self.terminal.insert_command(command)

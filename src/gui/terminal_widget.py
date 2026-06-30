@@ -148,3 +148,11 @@ class TerminalWidget(QWidget):
         Clear the terminal output.
         """
         self.output.clear()
+
+    def insert_command(self, command: str) -> None:
+        """
+        Insert a command into the terminal input line without executing it.
+        """
+        self.input_line.setText(command)
+        self.input_line.setFocus()
+        self.input_line.setCursorPosition(len(command))

@@ -11,10 +11,10 @@ from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractSpinBox,
     QDoubleSpinBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -119,11 +119,11 @@ class TuningSimulatorWindow(QMainWindow):
 
         self.toolbar = NavigationToolbar(self.canvas, self)
 
-        self.ax_phiadv = self.figure.add_axes([0.04, 0.55, 0.45, 0.38])
-        self.ax_ebp = self.figure.add_axes([0.04, 0.10, 0.45, 0.38])
-        self.ax_wbn_abs = self.figure.add_axes([0.54, 0.72, 0.43, 0.21])
-        self.ax_wbn_re = self.figure.add_axes([0.54, 0.41, 0.43, 0.21])
-        self.ax_wbn_im = self.figure.add_axes([0.54, 0.10, 0.43, 0.21])
+        self.ax_phiadv = self.figure.add_axes([0.04, 0.56, 0.45, 0.35])
+        self.ax_ebp = self.figure.add_axes([0.04, 0.11, 0.45, 0.35])
+        self.ax_wbn_abs = self.figure.add_axes([0.54, 0.72, 0.43, 0.19])
+        self.ax_wbn_re = self.figure.add_axes([0.54, 0.42, 0.43, 0.19])
+        self.ax_wbn_im = self.figure.add_axes([0.54, 0.11, 0.43, 0.19])
 
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
@@ -156,12 +156,14 @@ class TuningSimulatorWindow(QMainWindow):
         zero_button = QPushButton("Zero all")
         current_button = QPushButton("Use current ds11")
         output_button = QPushButton("Use output correction")
+        copy_button = QPushButton("Copy shifts")
         close_button = QPushButton("Close")
 
         apply_limit_button.clicked.connect(self.apply_global_limit_to_all)
         zero_button.clicked.connect(self.zero_all)
         current_button.clicked.connect(self.use_current_ds11)
         output_button.clicked.connect(self.use_output_correction)
+        copy_button.clicked.connect(self.copy_applied_shifts_to_clipboard)
         close_button.clicked.connect(self.close)
 
         top_row.addWidget(QLabel("Global limit [mU]"))
@@ -171,6 +173,7 @@ class TuningSimulatorWindow(QMainWindow):
         top_row.addWidget(zero_button)
         top_row.addWidget(current_button)
         top_row.addWidget(output_button)
+        top_row.addWidget(copy_button)
         top_row.addStretch()
         top_row.addWidget(close_button)
 
@@ -349,7 +352,7 @@ class TuningSimulatorWindow(QMainWindow):
         Return the window title label.
         """
         if getattr(self.bdata, "filename", None) is None:
-            return "BP_file N: record"
+            return "BP_file: record"
 
         return f'BP_file: "{Path(self.bdata.filename).name}"'
 
@@ -483,6 +486,31 @@ class TuningSimulatorWindow(QMainWindow):
         self._sync_controls_from_model()
         self.refresh_plot()
 
+    def copy_applied_shifts_to_clipboard(self) -> None:
+        """
+        Copy all applied dS11 shift values to the clipboard.
+
+        The copied text is tab-separated, so it can be pasted directly into
+        Excel as two columns: cell number and applied dS11 value in mU.
+        """
+        cells = np.arange(1, self.model.number_of_cells + 1, dtype=int)
+        values = np.asarray(self.model.dS11_mU, dtype=float)
+
+        lines = ["Cell\tdS11 [mU]"]
+
+        for cell, value in zip(cells, values):
+            lines.append(f"{cell}\t{value:.6g}")
+
+        clipboard_text = "\n".join(lines)
+
+        QApplication.clipboard().setText(clipboard_text)
+
+        QMessageBox.information(
+            self,
+            "Copied shifts",
+            "Applied dS11 shifts copied to clipboard.\n\nPaste into Excel to get two columns: cell number and dS11 [mU].",
+        )
+
     def _sync_controls_from_model(self) -> None:
         """
         Copy model values into the visible slider controls.
@@ -540,19 +568,21 @@ class TuningSimulatorWindow(QMainWindow):
         x_phi_original = np.arange(1, len(phiadv_original) + 1)
         x_phi_c = np.arange(1, len(phiadv_c) + 1)
 
-        self.ax_phiadv.plot(
+        original_line, = self.ax_phiadv.plot(
             x_phi_original,
             phiadv_original,
             "bx-",
             linewidth=0.8,
             markersize=4.5,
+            label="original",
         )
-        self.ax_phiadv.plot(
+        simulated_line, = self.ax_phiadv.plot(
             x_phi_c,
             phiadv_c + result.ddphi,
             "rx-",
             linewidth=0.8,
             markersize=4.5,
+            label="simulated",
         )
 
         if len(phiadv_original) > 1:
@@ -647,11 +677,29 @@ class TuningSimulatorWindow(QMainWindow):
         self.ax_wbn_re.set_ylabel("Re(wbn)  [mU]")
         self.ax_wbn_im.set_ylabel("Im(wbn)  [mU]")
 
+        self.ax_ebp.set_xlabel("Cell")
+        self.ax_wbn_im.set_xlabel("Cell")
+
         self.ax_phiadv.set_xlim(0, self.model.number_of_cells + 2)
         self.ax_ebp.set_xlim(0, self.model.number_of_cells + 2)
         self.ax_wbn_abs.set_xlim(0, self.model.number_of_cells + 2)
         self.ax_wbn_re.set_xlim(0, self.model.number_of_cells + 2)
         self.ax_wbn_im.set_xlim(0, self.model.number_of_cells + 2)
+
+        self.ax_phiadv.tick_params(labelbottom=False)
+        self.ax_wbn_abs.tick_params(labelbottom=False)
+        self.ax_wbn_re.tick_params(labelbottom=False)
+
+        self.figure.legends.clear()
+        self.figure.legend(
+            handles=[original_line, simulated_line],
+            labels=["original", "simulated"],
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.985),
+            ncol=2,
+            frameon=True,
+            fontsize=8,
+        )
 
         for axis in [
             self.ax_phiadv,
@@ -668,6 +716,8 @@ class TuningSimulatorWindow(QMainWindow):
         """
         Clear all axes.
         """
+        self.figure.legends.clear()
+
         for axis in [
             self.ax_phiadv,
             self.ax_ebp,
