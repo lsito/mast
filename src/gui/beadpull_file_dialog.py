@@ -342,7 +342,7 @@ class BeadpullFileDialog(QDialog):
 
         parent = self.parent()
         ip_address = getattr(parent, "vna_ip_address", "128.11.11.11")
-        port = getattr(parent, "vna_port", 1601)
+        port = getattr(parent, "vna_port", 5025)
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self.read_vna_button.setEnabled(False)

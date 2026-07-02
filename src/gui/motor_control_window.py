@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QGridLayout,
     QHBoxLayout,
@@ -65,6 +66,10 @@ class MotorControlWindow(QDialog):
 
         self.serial_edit = QLineEdit()
         self.axis_edit = QLineEdit()
+        self.interface_combo = QComboBox()
+        self.interface_combo.addItems(["rs232", "usb"])
+        self.rs232_port_edit = QLineEdit()
+        self.baudrate_edit = QLineEdit()
         self.bypass_checkbox = QCheckBox("Bypass controller communication")
 
         self.connect_button = QPushButton("Connect")
@@ -75,7 +80,15 @@ class MotorControlWindow(QDialog):
         connection_grid.addWidget(QLabel("Axis"), 0, 2)
         connection_grid.addWidget(self.axis_edit, 0, 3)
         connection_grid.addWidget(self.connect_button, 0, 4)
-        connection_grid.addWidget(self.bypass_checkbox, 1, 0, 1, 5)
+
+        connection_grid.addWidget(QLabel("Interface"), 1, 0)
+        connection_grid.addWidget(self.interface_combo, 1, 1)
+        connection_grid.addWidget(QLabel("COM port"), 1, 2)
+        connection_grid.addWidget(self.rs232_port_edit, 1, 3)
+        connection_grid.addWidget(QLabel("Baudrate"), 1, 4)
+        connection_grid.addWidget(self.baudrate_edit, 1, 5)
+
+        connection_grid.addWidget(self.bypass_checkbox, 2, 0, 1, 6)
 
         main_layout.addLayout(connection_grid)
 
@@ -237,6 +250,9 @@ class MotorControlWindow(QDialog):
         """
         self.serial_edit.setText("0205500274")
         self.axis_edit.setText("1")
+        self.interface_combo.setCurrentText("rs232")
+        self.rs232_port_edit.setText("COM5")
+        self.baudrate_edit.setText("38400")
 
         self.relative_move_edit.setText(f"{self.move_relative_value:.0f}")
         self.move_to1_edit.setText(f"{self.move_to1_value:.0f}")
@@ -255,6 +271,9 @@ class MotorControlWindow(QDialog):
                 controller_serial_number=self.serial_edit.text().strip(),
                 axis=self.axis_edit.text().strip(),
                 bypass=self.bypass_checkbox.isChecked(),
+                interface=self.interface_combo.currentText().strip(),
+                rs232_port=self.rs232_port_edit.text().strip(),
+                baudrate=int(self.baudrate_edit.text().strip()),
             )
             self.motor.connect()
             self.apply_motion_values(refresh_after=False)
@@ -327,7 +346,9 @@ class MotorControlWindow(QDialog):
         """
         try:
             self.update_move_values_from_fields()
-            self._require_motor().move_relative(self.move_relative_value)
+            motor = self._require_motor()
+            motor.move_relative(self.move_relative_value)
+            motor.wait_until_done(timeout_s=30, poll_s=0.2)
             self.trigger_vna_from_parent_settings()
             self.refresh_status()
         except Exception as exc:
@@ -392,12 +413,13 @@ class MotorControlWindow(QDialog):
         parent = self.parent()
 
         ip_address = getattr(parent, "vna_ip_address", "128.11.11.11")
-        port = getattr(parent, "vna_port", 1601)
+        port = getattr(parent, "vna_port", 5025)
 
         trigger_vna(
             ip_address=ip_address,
             port=port,
-            trigger_command="*TRG\n",
+            channel=1,
+            trigger_wait_s=5.0,
         )
 
     def refresh_status(self) -> None:

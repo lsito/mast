@@ -1,28 +1,48 @@
 from __future__ import annotations
+
 import numpy as np
+
+from src.core.vna_control import RSVNASocketController
+
 
 def read_vna_measurement(
     ip_address: str = "128.11.11.11",
-    port: int = 1601,
+    port: int = 5025,
+    channel: int = 1,
+    trigger: bool = False,
+    trigger_wait_s: float = 5.0,
 ):
     """
-    Read VNA data.
+    Read VNA data through the raw socket controller.
 
-    This is the only place that should contain VNA-specific communication.
+    Returns
+    -------
+    trace_names, trace_data, frequency_hz
 
-    For now this is a placeholder/interface. Once we know the Python library or
-    SCPI commands you want to use, this function should return:
-
-        trace_names, trace_data, frequency_hz
-
-    where:
-        trace_names  -> list[str]
-        trace_data   -> complex array, shape (n_points, n_traces)
-        frequency_hz -> float array, shape (n_points,)
+    trace_data has shape:
+        (n_points, n_traces)
     """
-    raise NotImplementedError(
-        "Connect this function to your Rohde & Schwarz VNA communication layer."
-    )
+    with RSVNASocketController(
+        ip_address=ip_address,
+        port=port,
+        timeout_s=120,
+        release_on_close=True,
+        release_after_measurement=True,
+    ) as vna:
+        data = vna.acquire_trace_data(
+            channel=channel,
+            trigger=trigger,
+            trigger_wait_s=trigger_wait_s,
+            trigger_use_opc=False,
+            use_measurement_names=True,
+        )
+
+    # RSVNASocketController returns traces as [trace][point].
+    # The old writer expects [point][trace].
+    trace_data = np.array(data.complex_traces, dtype=np.complex128).T
+    frequency_hz = np.array(data.frequency_hz, dtype=float)
+
+    return data.trace_names, trace_data, frequency_hz
 
 
 def validate_vna_data(trace_names, trace_data, frequency_hz) -> None:
@@ -46,21 +66,29 @@ def validate_vna_data(trace_names, trace_data, frequency_hz) -> None:
 
     if trace_data.shape[0] != len(frequency_hz):
         raise ValueError("Number of frequency points does not match trace data.")
-    
+
+
 def trigger_vna(
     ip_address: str = "128.11.11.11",
-    port: int = 1601,
-    trigger_command: str = "*TRG\n",
-    timeout_s: float = 3.0,
+    port: int = 5025,
+    channel: int = 1,
+    trigger_wait_s: float = 5.0,
+    timeout_s: float = 120.0,
 ) -> None:
     """
-    Send a trigger command to the VNA over a raw TCP socket.
+    Trigger one VNA sweep over the raw TCP socket and release the VNA cleanly.
 
-    The default command is the standard SCPI trigger command `*TRG`.
-    If your VNA helper server expects another command, change
-    `trigger_command`.
+    This avoids VISA/PyVISA and avoids *OPC? by using a fixed wait.
     """
-    import socket
-
-    with socket.create_connection((ip_address, int(port)), timeout=timeout_s) as sock:
-        sock.sendall(trigger_command.encode("ascii"))
+    with RSVNASocketController(
+        ip_address=ip_address,
+        port=port,
+        timeout_s=timeout_s,
+        release_on_close=True,
+        release_after_measurement=True,
+    ) as vna:
+        vna.trigger_single_sweep(
+            channel=channel,
+            wait_s=trigger_wait_s,
+            use_opc=False,
+        )

@@ -20,7 +20,7 @@ class VNASettingsDialog(QDialog):
     def __init__(
         self,
         ip_address: str = "128.11.11.11",
-        port: int = 1601,
+        port: int = 5025,
         parent=None,
     ) -> None:
         """

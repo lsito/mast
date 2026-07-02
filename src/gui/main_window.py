@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
         self.vna_ip_address = "128.11.11.11"
-        self.vna_port = 1601
+        self.vna_port = 5025
 
         self._apply_style()
         self._update_step_buttons()
